@@ -1,10 +1,10 @@
 import torch
 
-from models.deeplabv3plus import get_deeplabv3plus
-from models.smp import get_smp
-from models.yolov5 import get_yolov5
-from models.yolov6 import get_yolov6
-from models.ssd import get_ssd
+from .deeplabv3plus import get_deeplabv3plus
+from .smp import get_smp
+from .yolov5 import get_yolov5
+from .yolov6 import get_yolov6
+from .ssd import get_ssd
 MODELS = {
     # object detectors
     "yolov5": get_yolov5,

@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from models.yolov5 import non_max_suppression, Sigmoid_
+from .yolov5 import non_max_suppression, Sigmoid_
 
 MODEL = dict(
     type='YOLOv6s',
