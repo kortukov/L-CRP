@@ -386,6 +386,7 @@ class FeatureVisualizationPersonCar(FeatureVisualizationMultiTarget):
         targets = np.random.permutation(targets)
         # Targets is a multi-hot vector of length num_classes. It has one if the class is present in the image label.
         targets = [1 if (i in targets.astype(int)) else 0 for i in range(len(self.dataset.class_names))]
+        targets = torch.tensor(targets, dtype=torch.int).unsqueeze(0)
 
         return data.unsqueeze(0).to(self.device).requires_grad_(), targets
 
