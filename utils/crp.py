@@ -337,6 +337,7 @@ class FeatureVisualizationMultiTarget(FeatureVisualization):
 
 
 class FeatureVisualizationLocalization(FeatureVisualizationMultiTarget):
+
     def get_data_sample(self, index, preprocessing=True) -> Tuple[torch.tensor, List[int]]:
         """
         returns a data sample from dataset at index.
@@ -358,6 +359,36 @@ class FeatureVisualizationLocalization(FeatureVisualizationMultiTarget):
         targets = [1 if (i in targets.astype(int)) else 0 for i in range(len(self.dataset.class_names))]
 
         return data.unsqueeze(0).to(self.device).requires_grad_(), targets
+
+
+class FeatureVisualizationPersonCar(FeatureVisualizationMultiTarget):
+
+    def get_data_sample(self, index, preprocessing=True) -> Tuple[torch.tensor, List[int]]:
+        """
+        returns a data sample from dataset at index.
+
+        Parameter:
+            index: integer
+            preprocessing: boolean.
+                If True, return the sample after preprocessing. If False, return the sample for plotting.
+        """
+
+        data, objects = self.dataset[index]
+
+        if not preprocessing:
+            data = self.dataset.reverse_normalization(data)
+        
+        # All classes that are in the image label. Label here is a list of objects, each object has a class_id.
+        target = [obj["class_id"] for obj in objects]
+        target = np.array(target).astype(int)
+
+        targets = np.unique(target)
+        targets = np.random.permutation(targets)
+        # Targets is a multi-hot vector of length num_classes. It has one if the class is present in the image label.
+        targets = [1 if (i in targets.astype(int)) else 0 for i in range(len(self.dataset.class_names))]
+
+        return data.unsqueeze(0).to(self.device).requires_grad_(), targets
+
 
 
 class FeatureVisualizationSegmentation(FeatureVisualizationMultiTarget):
