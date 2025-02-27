@@ -51,6 +51,18 @@ def get_yolov6(*args, **kwargs):
     return model
 
 
+def get_yolov6s6(*args, **kwargs):
+    cfg = Config({"model": MODEL})
+    device = kwargs.get("device", 0)
+    ckpt_path = kwargs.get("ckpt_path", "models/checkpoints/yolob6s_ckpt.pt")
+    dtype = kwargs.get("dtype", torch.float32)
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False) 
+    model = checkpoint['model']
+    model.to(device)
+    model.to(dtype)
+    return YoloV6S6_Model(model)
+
+
 def initialize_weights(model):
     for m in model.modules():
         t = type(m)
@@ -61,6 +73,88 @@ def initialize_weights(model):
             m.momentum = 0.03
         elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
+
+
+
+class YoloV6S6_Model(nn.Module):
+    """YOLOv6s6 following the architecture from https://github.com/meituan/YOLOv6 and the one trained by AUTH."""
+    def __init__(self, model):
+        super().__init__()
+        self.module = model
+        self.stride = model.stride
+
+    def make_explainable(self, output):
+        """This function should follow Max's make_explainable in class Model, but I ran it through Claude to understand it better. 
+        
+        Additionally it now works with outputs with any number of classes, unlike the hardcoded 86 for COCO dataset in Max's code.
+        """
+        num_classes = output[0].shape[2] - 5  
+        # output is a list of len batch_size, each elem is shape (num_detections, 4 + 1 + num_classes), where this 1 is the objectness score
+
+        # Apply non-max suppression to filter overlapping detections
+        filtered_detections = non_max_suppression(output[0]) 
+        assert filtered_detections[0].shape[1]
+
+        # filtered_detections is a list of len batch_size, each elem is shape (num_detections, 4(xyxy) + 1(pred_confidence) + 1(pred_class_idx) + num_classes(logits))
+
+        # Print shape of the first batch item after filtering
+        print(filtered_detections[0].shape)
+
+
+        # Ensure each detection has 6 + num_classes columns and looks like this: (x1, y1, x2, y2, class_confidence, pred_class_idx,  class0_logit, class_1_logit, ..., class_n_logit)
+        # If not, create zeros tensor with the right shape
+        standardized_detections = [
+            detection if detection.shape[1] == 6 + num_classes
+            else torch.zeros((detection.shape[0], 6 + num_classes)).to(detection) 
+            for detection in filtered_detections
+        ]
+
+        # Find the maximum number of detection boxes across all batch items
+        max_boxes = np.max([detection.shape[0] for detection in filtered_detections])
+
+        # Pad each batch item with zeros to match the maximum number of detection boxes
+        # This ensures all items in the batch have the same dimensions
+        padded_detections = []
+        for detection in standardized_detections:
+            if detection.shape[0] < max_boxes:
+                # Create a new tensor with the desired size, filled with zeros
+                padded_detection = torch.zeros((max_boxes, 6 + num_classes), device=detection.device, dtype=detection.dtype)
+                # Copy the original detection values
+                padded_detection[:detection.shape[0], :] = detection
+                padded_detections.append(padded_detection)
+            else:
+                padded_detections.append(detection)
+        
+        padded_detections = torch.stack(padded_detections, dim=0)
+
+        # Extract bounding box coordinates (first 4 columns: x1, y1, x2, y2)
+        bbox = padded_detections[..., :4]
+        # Extract predicted class confidence
+        class_confidence = padded_detections[..., 4:5]
+
+        # Extract predicted class index
+        pred_class_idx = padded_detections[..., 5:6]
+
+        # Extract class scores (remaining columns: class0_logit, class_1_logit, ..., class_n_logit)
+        scores = padded_detections[..., 6:]
+
+        return scores, bbox
+
+    def forward(self, x):
+        x = self.module(x)
+        ret = self.make_explainable(x)
+        self.last_boxes = ret[1][0]
+        return ret[0]
+
+    def predict_with_boxes(self, x):
+        x = self.module(x)
+        return self.make_explainable(x)
+
+    def raw_predict(self, x):
+        return self.module(x)
+
+    def final_boxes(self):
+        return self.last_boxes
 
 
 class Model(nn.Module):

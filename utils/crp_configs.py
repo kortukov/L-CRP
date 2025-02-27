@@ -4,11 +4,13 @@ from utils.crp import CondAttributionLocalization, CondAttributionSegmentation, 
     FeatureVisualizationSegmentation
 from utils.zennit_canonizers import YoloV5V6Canonizer, DeepLabV3PlusCanonizer
 from utils.zennit_composites import EpsilonPlusFlat, EpsilonGammaFlat
+from utils.galip_canonizers import YoloV6Canonizer as YoloV6CanonizerGalip
 
 COMPOSITES = {
     # object detectors
     "yolov5": EpsilonPlusFlat,
     "yolov6": EpsilonGammaFlat,
+    "yolov6s6": EpsilonGammaFlat,
     "ssd": EpsilonPlusFlat,
     # segmentation models
     "unet": EpsilonPlusFlat,
@@ -19,6 +21,7 @@ CANONIZERS = {
     # object detectors
     "yolov5": YoloV5V6Canonizer,
     "yolov6": YoloV5V6Canonizer,
+    "yolov6s6": YoloV6CanonizerGalip,
     "ssd": ResNetCanonizer,
     # segmentation models
     "unet": ResNetCanonizer,
@@ -29,6 +32,7 @@ ATTRIBUTORS = {
     # object detectors
     "yolov5": CondAttributionLocalization,
     "yolov6": CondAttributionLocalization,
+    "yolov6s6": CondAttributionLocalization,
     "ssd": CondAttributionLocalization,
     # segmentation models
     "unet": CondAttributionSegmentation,
@@ -39,6 +43,7 @@ VISUALIZATIONS = {
     # object detectors
     "yolov5": FeatureVisualizationLocalization,
     "yolov6": FeatureVisualizationLocalization,
+    "yolov6s6": FeatureVisualizationLocalization,
     "ssd": FeatureVisualizationLocalization,
     # segmentation models
     "unet": FeatureVisualizationSegmentation,
