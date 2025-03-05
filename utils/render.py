@@ -209,7 +209,7 @@ def vis_opaque_img_border(data_batch, heatmaps, rf=False, alpha=0.5, vis_th=0.05
     imgs = []
     for i in range(len(data_batch)):
 
-        img = data_batch[i]
+        img = data_batch[i][:3, :, :]
 
         filtered_heat = gaussian_blur(heatmaps[i].unsqueeze(0), kernel_size=kernel_size)[0]
         filtered_heat = filtered_heat / filtered_heat.clamp(min=0).max()

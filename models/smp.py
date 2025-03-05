@@ -15,7 +15,7 @@ CONFIGS = {
 }
 
 
-def get_smp(model_name: str):
+def get_smp(model_name: str, device: str = "cuda"):
     def get_model(**kwargs):
         cfg = CONFIGS[model_name]
         model_kwargs = {
@@ -26,7 +26,7 @@ def get_smp(model_name: str):
 
         if "ckpt_path" in kwargs:
             print("Loaded checkpoint", kwargs["ckpt_path"])
-            model.load_state_dict(torch.load(kwargs["ckpt_path"]))
+            model.load_state_dict(torch.load(kwargs["ckpt_path"], map_location=torch.device('cpu')))
         elif "ckpt_path" in cfg:
             print("Loaded checkpoint", cfg["ckpt_path"])
             model.load_state_dict(torch.load(cfg["ckpt_path"]))
