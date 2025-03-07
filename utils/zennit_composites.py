@@ -4,9 +4,9 @@ from zennit.layer import Sum
 from zennit.rules import ZPlus, Epsilon, Flat, Pass, ReLUGuidedBackprop
 from zennit.types import Convolution, Linear, Activation, AvgPool, BatchNorm
 
-from models.SSD.ssd.layers import L2Norm
-from models.yolov5 import Sigmoid_
-from utils.zennit_rules import GammaResNet
+from LCRP.models.SSD.ssd.layers import L2Norm
+from LCRP.models.yolov5 import Sigmoid_
+from LCRP.utils.zennit_rules import GammaResNet
 
 
 class EpsilonPlusFlat(SpecialFirstLayerMapComposite):

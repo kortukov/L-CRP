@@ -1,10 +1,10 @@
 from zennit.torchvision import ResNetCanonizer
 
-from utils.crp import CondAttributionLocalization, CondAttributionSegmentation, FeatureVisualizationLocalization, \
+from LCRP.utils.crp import CondAttributionLocalization, CondAttributionSegmentation, FeatureVisualizationLocalization, \
     FeatureVisualizationSegmentation
-from utils.zennit_canonizers import YoloV5V6Canonizer, DeepLabV3PlusCanonizer
-from utils.zennit_composites import EpsilonPlusFlat, EpsilonGammaFlat
-from utils.galip_canonizers import YoloV6Canonizer as YoloV6CanonizerGalip
+from LCRP.utils.zennit_canonizers import YoloV5V6Canonizer, DeepLabV3PlusCanonizer
+from LCRP.utils.zennit_composites import EpsilonPlusFlat, EpsilonGammaFlat
+from LCRP.utils.galip_canonizers import YoloV6Canonizer as YoloV6CanonizerGalip
 
 COMPOSITES = {
     # object detectors
