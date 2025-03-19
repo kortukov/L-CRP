@@ -2,10 +2,12 @@ import copy
 import math
 import warnings
 from typing import List, Dict, Union, Callable, Tuple, Iterable
+import time
+import logging
 
 import numpy as np
 import torch
-from crp.attribution import CondAttribution
+from crp.attribution import CondAttribution, attrResult, MaskHook
 from crp.concepts import Concept
 from crp.concepts import ChannelConcept
 from crp.helper import load_maximization, load_statistics
@@ -18,7 +20,80 @@ from tqdm import tqdm
 from zennit.composites import NameMapComposite
 from zennit.core import Composite
 
-class CondAttributionLocalization(CondAttribution):
+
+logger = logging.getLogger(__name__)
+
+
+class CondAttributionWithTiming(CondAttribution):
+    def _attribute(
+        self, data: torch.tensor, conditions: List[Dict[str, List]],
+        composite: Composite = None, record_layer: List[str] = [],
+        mask_map: Union[Callable, Dict[str, Callable]] = ChannelConcept.mask, start_layer: str = None, init_rel=None,
+        on_device: str = None, exclude_parallel=True) -> attrResult:
+        """
+        Computes the actual attributions as described in __call__ method docstring.
+        exclude_parallel: boolean
+            If set, all layer names in 'conditions' must be identical. This limitation does not apply to the __call__ method.
+        """
+        data, conditions = self.broadcast(data, conditions)
+
+        self._check_arguments(data, conditions, start_layer, exclude_parallel, init_rel)
+
+        hook_map, y_targets, cond_l_names = {}, [], []
+        for i, cond in enumerate(conditions):
+            for l_name, indices in cond.items():
+                if l_name == self.MODEL_OUTPUT_NAME:
+                    y_targets.append(indices)
+                else:
+                    if l_name not in hook_map:
+                        hook_map[l_name] = MaskHook([])
+                    self._register_mask_fn(hook_map[l_name], mask_map, i, indices, l_name)
+                    if l_name not in cond_l_names:
+                        cond_l_names.append(l_name)
+
+        handles, layer_out = self._append_recording_layer_hooks(record_layer, start_layer, cond_l_names)
+
+        name_map = [([name], hook) for name, hook in hook_map.items()]
+        mask_composite = NameMapComposite(name_map)
+
+        if composite is None:
+            composite = Composite()
+
+        with mask_composite.context(self.model), composite.context(self.model) as modified:
+
+            if start_layer:
+                pred_start_ts = time.time()
+                _ = modified(data)
+                pred_time = time.time() - pred_start_ts
+                pred = layer_out[start_layer]
+                grad_mask = self.relevance_init(pred.detach().clone(), None, init_rel)
+                if start_layer in cond_l_names:
+                    cond_l_names.remove(start_layer)
+                backward_start_ts = time.time()
+                self.backward(pred, grad_mask, exclude_parallel, cond_l_names, layer_out)
+                backward_time = time.time() - backward_start_ts
+
+            else:
+                pred_start_ts = time.time()
+                pred = modified(data)
+                pred_time = time.time() - pred_start_ts
+                grad_mask = self.relevance_init(pred.detach().clone(), y_targets, init_rel)
+                backward_start_ts = time.time()
+                self.backward(pred, grad_mask, exclude_parallel, cond_l_names, layer_out)
+                backward_time = time.time() - backward_start_ts
+
+            attribution = self.heatmap_modifier(data, on_device)
+            activations, relevances = {}, {}
+            if len(layer_out) > 0:
+                activations, relevances = self._collect_hook_activation_relevance(layer_out, on_device)
+            [h.remove() for h in handles]
+
+        full_attrib_time = time.time() - backward_start_ts
+        logger.debug(f"Prediction time: {pred_time}, Backward time: {backward_time}, Full attribution time: {full_attrib_time}")
+        return attrResult(attribution, activations, relevances, pred)
+
+
+class CondAttributionLocalization(CondAttributionWithTiming):
 
     def __init__(self, model: torch.nn.Module):
         super().__init__(model)
@@ -44,7 +119,7 @@ class CondAttributionLocalization(CondAttribution):
         return CondAttribution.relevance_init(self, prediction, None, init_rel)
 
 
-class CondAttributionSegmentation(CondAttribution):
+class CondAttributionSegmentation(CondAttributionWithTiming):
 
     def __init__(self, model: torch.nn.Module):
         super().__init__(model)
