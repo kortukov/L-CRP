@@ -21,6 +21,7 @@ from zennit.composites import NameMapComposite
 from zennit.core import Composite
 
 
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -89,7 +90,7 @@ class CondAttributionWithTiming(CondAttribution):
             [h.remove() for h in handles]
 
         full_attrib_time = time.time() - backward_start_ts
-        logger.debug(f"Prediction time: {pred_time}, Backward time: {backward_time}, Full attribution time: {full_attrib_time}")
+        logger.error(f"Prediction time: {pred_time}, Backward time: {backward_time}, Full attribution time: {full_attrib_time}")
         return attrResult(attribution, activations, relevances, pred)
 
 
