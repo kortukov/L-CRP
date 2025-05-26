@@ -7,7 +7,6 @@ import torch.nn.functional as F
 import time
 from .model_utils import BasicBlock, Bottleneck, segmenthead, DAPPM, PAPPM, PagFM, Bag, Light_Bag
 import logging
-from LCRP.utils.pidnet_canonizers import InterpolateWrapper, Cat
 
 BatchNorm2d = nn.BatchNorm2d
 bn_mom = 0.1
@@ -165,22 +164,22 @@ class PIDNet(nn.Module):
         width_output = x.shape[-1] // 8
         height_output = x.shape[-2] // 8
 
-        x = self.conv1(x) #
-        x = self.layer1(x) # 
-        x = self.relu(self.layer2(self.relu(x))) # 
+        x = self.conv1(x)
+        x = self.layer1(x)
+        x = self.relu(self.layer2(self.relu(x)))
         x_ = self.layer3_(x)
         x_d = self.layer3_d(x)
         
-        x = self.relu(self.layer3(x)) # 
+        x = self.relu(self.layer3(x))
         x_ = self.pag3(x_, self.compression3(x))
         x_d = x_d + F.interpolate(
                         self.diff3(x),
                         size=[height_output, width_output],
-                        mode='bilinear', align_corners=False)
+                        mode='bilinear', align_corners=algc)
         if self.augment:
             temp_p = x_
         
-        x = self.relu(self.layer4(x)) # 
+        x = self.relu(self.layer4(x))
         x_ = self.layer4_(self.relu(x_))
         x_d = self.layer4_d(self.relu(x_d))
         
@@ -188,16 +187,18 @@ class PIDNet(nn.Module):
         x_d = x_d + F.interpolate(
                         self.diff4(x),
                         size=[height_output, width_output],
-                        mode='bilinear', align_corners=False)
+                        mode='bilinear', align_corners=algc)
         if self.augment:
             temp_d = x_d
             
         x_ = self.layer5_(self.relu(x_))
         x_d = self.layer5_d(self.relu(x_d))
-        self.interp = InterpolateWrapper(size=[height_output, width_output], mode="bilinear",align_corners=False) 
-        x = self.interp(self.spp(self.layer5(x))) # 
+        x = F.interpolate(
+                        self.spp(self.layer5(x)),
+                        size=[height_output, width_output],
+                        mode='bilinear', align_corners=algc)
 
-        x_ = self.final_layer(self.dfm(x_, x, x_d)) #
+        x_ = self.final_layer(self.dfm(x_, x, x_d))
 
         if self.augment: 
             x_extra_p = self.seghead_p(temp_p)
