@@ -5,7 +5,7 @@ from LCRP.utils.crp import CondAttributionLocalization, CondAttributionSegmentat
 from LCRP.utils.zennit_canonizers import YoloV5V6Canonizer, DeepLabV3PlusCanonizer
 from LCRP.utils.zennit_composites import EpsilonPlusFlat, EpsilonGammaFlat
 from LCRP.utils.galip_canonizers import YoloV6Canonizer as YoloV6CanonizerGalip
-from LCRP.utils.pidnet_canonizers import CanonizerPIDNet
+from LCRP.utils.pidnet_canonizers import PIDNetCanonizer, EpsilonPlusFlatforPIDNet
 
 
 
@@ -18,7 +18,7 @@ COMPOSITES = {
     # segmentation models
     "unet": EpsilonPlusFlat,
     "deeplabv3plus": EpsilonPlusFlat,
-    "pidnet": EpsilonPlusFlat,
+    "pidnet": EpsilonPlusFlatforPIDNet,
 }
 
 CANONIZERS = {
@@ -30,7 +30,7 @@ CANONIZERS = {
     # segmentation models
     "unet": ResNetCanonizer,
     "deeplabv3plus": DeepLabV3PlusCanonizer,
-    "pidnet": CanonizerPIDNet,
+    "pidnet": PIDNetCanonizer,
 }
 
 ATTRIBUTORS = {

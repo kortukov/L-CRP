@@ -77,6 +77,8 @@ class CondAttributionWithTiming(CondAttribution):
             else:
                 pred_start_ts = time.time()
                 pred = modified(data)
+                if isinstance(pred, list):
+                    pred=pred[1] #GALIP'S ADDITION TO MAKE THE NOTEBOOK WORK WITHOUT THINKING TOO MUCH ABOUT WHAT HE IS ACTUALLY DOING HERE
                 pred_time = time.time() - pred_start_ts
                 grad_mask = self.relevance_init(pred.detach().clone(), y_targets, init_rel)
                 backward_start_ts = time.time()
