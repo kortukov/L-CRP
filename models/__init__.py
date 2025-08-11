@@ -15,7 +15,7 @@ MODELS = {
     # segmentation models
     "unet": get_smp("unet"),
     "deeplabv3plus": get_deeplabv3plus,
-    "pidnet": get_pidnet("pidnet"), 
+    "pidnet": get_pidnet, 
 }
 
 def get_model(model_name: str, **kwargs) -> torch.nn.Module:

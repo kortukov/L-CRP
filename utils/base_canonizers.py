@@ -171,8 +171,9 @@ class SequentialMergeBatchNormtoRight(MergeBatchNorm):
                 index = (None, slice(None), *((None,) * (original_weight.ndim - 2)))
 
             # merge batch_norm into linear layer to the right
-            original_weight.to(scale[index].device)
-            original_bias.to(scale[index].device)
+            scale_device = scale[index].device
+            original_weight = original_weight.to(scale_device)
+            original_bias = original_bias.to(scale_device)
             module.weight.data = (original_weight * scale[index])
 
             # module.bias.data = original_bias
