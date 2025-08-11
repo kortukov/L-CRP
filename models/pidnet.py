@@ -13,38 +13,50 @@ bn_mom = 0.1
 algc = False
 
 
+
+BatchNorm2d = nn.BatchNorm2d
+bn_mom = 0.1
+algc = False
+
+# Default config used when no overrides are provided via kwargs.
 CONFIGS = {
     "pidnet": {
         "classes": 2,
-        "ckpt_path": "../models/checkpoints/flood_s_best_pidnet_modified.pt"
+        "ckpt_path": "../models/checkpoints/flood_s_best_pidnet_modified.pt",
     }
 }
 
-def get_pidnet(model_name, device="cuda", **kwargs):
-    """Load a PIDNet model from configuration and move it to the specified device."""
-    if model_name not in CONFIGS:
-        raise ValueError(f"Unknown model name '{model_name}'. Available: {list(CONFIGS.keys())}")
+def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
+    """
+    Load a PIDNet model and move it to the specified device.
 
-    cfg = CONFIGS[model_name]
+    This version does NOT require `model_name`. It merges `kwargs` with defaults from CONFIGS["pidnet"].
+    You may override:
+      - classes: int
+      - ckpt_path: str
+    """
+    # Merge defaults with any overrides
+    cfg = {**CONFIGS["pidnet"], **kwargs}
 
-    # Build the model with fixed parameters (modify if you want these configurable)
+    # Build model
     model = PIDNet(
         m=2, n=3, num_classes=cfg["classes"], planes=32,
         ppm_planes=96, head_planes=128, augment=True
     )
 
-    # Select checkpoint path from kwargs or config
-    ckpt_path = kwargs.get("ckpt_path", cfg.get("ckpt_path"))
+    # Load checkpoint if provided
+    ckpt_path = cfg.get("ckpt_path")
     if ckpt_path is None:
-        raise ValueError(f"No checkpoint path provided for model '{model_name}'.")
+        raise ValueError("No checkpoint path provided. Pass `ckpt_path` to get_pidnet(...)")
 
     print(f"Loading checkpoint from: {ckpt_path}")
-    state_dict = torch.load(ckpt_path, map_location="cpu")  # Load on CPU first to avoid device mismatch
-    model.load_state_dict(state_dict)
+    state = torch.load(ckpt_path, map_location="cpu")
+    # Allow both full state_dict or a dict containing "state_dict"
+    state_dict = state.get("state_dict", state)
+    model.load_state_dict(state_dict, strict=True)
 
-    # Move to the correct device (fixes CPU/GPU mismatch in canonizers)
+    # Move to the desired device
     model = model.to(device)
-
     return model
 
 class PIDNet(nn.Module):
