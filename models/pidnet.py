@@ -19,25 +19,23 @@ CONFIGS = {
     }
 }
 
-def get_pidnet(model_name, device='cpu', **kwargs):
-    def get_pidnet_model():
-        cfg = CONFIGS[model_name]
-        model_kwargs = {
-            k: kwargs[k] if k in kwargs.keys() else cfg[k]
-            for k in ["classes", "ckpt_path"]
-        }
-        model = PIDNet(m=2, n=3, num_classes=2, planes=32, ppm_planes=96, head_planes=128, augment=True)
-        
+def get_pidnet(model_name='pidnet', device='cpu', **kwargs):
+    cfg = CONFIGS[model_name]
+    model_kwargs = {
+        k: kwargs[k] if k in kwargs.keys() else cfg[k]
+        for k in ["classes", "ckpt_path"]
+    }
+    model = PIDNet(m=2, n=3, num_classes=2, planes=32, ppm_planes=96, head_planes=128, augment=True)
+    
 
-        if "ckpt_path" in kwargs:
-            print("Loaded checkpoint", kwargs["ckpt_path"])
-            model.load_state_dict(torch.load(kwargs["ckpt_path"], map_location=torch.device('cpu')))
-        elif "ckpt_path" in cfg:
-            print("Loaded checkpoint", cfg["ckpt_path"])
-            model.load_state_dict(torch.load(cfg["ckpt_path"]))
+    if "ckpt_path" in kwargs:
+        print("Loaded checkpoint", kwargs["ckpt_path"])
+        model.load_state_dict(torch.load(kwargs["ckpt_path"], map_location=torch.device('cpu')))
+    elif "ckpt_path" in cfg:
+        print("Loaded checkpoint", cfg["ckpt_path"])
+        model.load_state_dict(torch.load(cfg["ckpt_path"]))
 
-        return model
-    return get_pidnet_model
+    return model
 
 
 class PIDNet(nn.Module):
