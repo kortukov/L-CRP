@@ -31,14 +31,11 @@ def get_pidnet(model_name, device='cpu', **kwargs):
 
         if "ckpt_path" in kwargs:
             print("Loaded checkpoint", kwargs["ckpt_path"])
-            checkpoint = torch.load(kwargs["ckpt_path"], map_location=torch.device(device))
-            model.load_state_dict(checkpoint)
+            model.load_state_dict(torch.load(kwargs["ckpt_path"], map_location=torch.device('cpu')))
         elif "ckpt_path" in cfg:
             print("Loaded checkpoint", cfg["ckpt_path"])
-            checkpoint = torch.load(cfg["ckpt_path"], map_location=torch.device(device))
-            model.load_state_dict(checkpoint)
+            model.load_state_dict(torch.load(cfg["ckpt_path"]))
 
-        model = model.to(device)
         return model
     return get_pidnet_model
 
@@ -164,8 +161,6 @@ class PIDNet(nn.Module):
 
     def forward(self, x):
 
-        width_output = x.shape[-1] // 8
-        height_output = x.shape[-2] // 8
 
         x = self.conv1(x)
         x = self.layer1(x)
@@ -173,8 +168,12 @@ class PIDNet(nn.Module):
         x_ = self.layer3_(x)
         x_d = self.layer3_d(x)
         
+        height_output = x_d.shape[-2]
+        width_output = x_d.shape[-1]
+        
         x = self.relu(self.layer3(x))
         x_ = self.pag3(x_, self.compression3(x))
+        logging.debug(f"x shape: {x.shape}, x_ shape: {x_.shape}, x_d shape: {x_d.shape}")
         x_d = x_d + F.interpolate(
                         self.diff3(x),
                         size=[height_output, width_output],
@@ -259,13 +258,13 @@ if __name__ == '__main__':
     
     # Comment batchnorms here and in model_utils before testing speed since the batchnorm could be integrated into conv operation
     # (do not comment all, just the batchnorm following its corresponding conv layer)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda')
     model = get_pred_model(name='pidnet_s', num_classes=19)
     model.eval()
-    model = model.to(device)
+    model.to(device)
     iterations = None
     
-    input = torch.randn(1, 3, 1024, 2048, device=device)
+    input = torch.randn(1, 3, 1024, 2048).cuda()
     with torch.no_grad():
         for _ in range(10):
             model(input)
