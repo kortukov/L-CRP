@@ -59,6 +59,10 @@ class CondAttributionWithTiming(CondAttribution):
 
         if composite is None:
             composite = Composite()
+        
+        # Ensure data dtype/device matches model before forward
+        mp = next(self.model.parameters())
+        data = data.to(dtype=mp.dtype, device=mp.device)
 
         with mask_composite.context(self.model), composite.context(self.model) as modified:
 
@@ -381,6 +385,9 @@ class FeatureVisualizationMultiTarget(FeatureVisualization):
         heatmaps = []
         for b in range(batches):
             data_batch = data[b * batch_size: (b + 1) * batch_size].detach().requires_grad_()
+            # Align dtype/device to model and enable grads
+            mp = next(self.attribution.model.parameters())
+            data_batch = data_batch.to(dtype=mp.dtype, device=mp.device).detach().requires_grad_()
 
             if targets is None:
                 start_layer = layer_name
