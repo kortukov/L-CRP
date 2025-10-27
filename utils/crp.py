@@ -416,7 +416,21 @@ class FeatureVisualizationMultiTarget(FeatureVisualization):
                 attr = self.attribution(data_batch, conditions, composite, start_layer=start_layer,
                                         on_device=self.device, exclude_parallel=exlude_parallel)
 
-            heatmaps.append(attr.heatmap)
+            heatmap = attr.heatmap
+            if torch.is_tensor(heatmap):
+                heatmap_cpu = heatmap.detach().cpu()
+            elif isinstance(heatmap, (list, tuple)):
+                heatmap_cpu = torch.stack([
+                    h.detach().cpu() if torch.is_tensor(h) else torch.as_tensor(h)
+                    for h in heatmap
+                ])
+            else:
+                heatmap_cpu = torch.as_tensor(heatmap)
+            heatmaps.append(heatmap_cpu)
+
+            del attr
+            del data_batch
+            torch.cuda.empty_cache()
 
         return torch.cat(heatmaps, dim=0)
 
