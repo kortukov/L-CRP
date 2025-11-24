@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import time
 from .model_utils import BasicBlock, Bottleneck, segmenthead, DAPPM, PAPPM, PagFM, Bag, Light_Bag
 import logging
+import os
 
 BatchNorm2d = nn.BatchNorm2d
 bn_mom = 0.1
@@ -15,7 +16,7 @@ algc = False
 CONFIGS = {
     "pidnet": {
         "classes": 2,
-        "ckpt_path": "models/flood_s_best_pidnet_modified.pt"
+        "ckpt_path": "../models/flood_model.pt"
     }
 }
 
@@ -25,25 +26,50 @@ def get_pidnet(model_name='pidnet', device='cpu', **kwargs):
         k: kwargs[k] if k in kwargs.keys() else cfg[k]
         for k in ["classes", "ckpt_path"]
     }
-    model = PIDNet(m=2, n=3, num_classes=2, planes=32, ppm_planes=96, head_planes=128, augment=True)
-    
+    # Create model with requested number of classes (fallback to cfg)
+    num_classes = model_kwargs.get("classes", 2)
+    model = PIDNet(m=2, n=3, num_classes=num_classes, planes=32, ppm_planes=96, head_planes=128, augment=True)
 
-    if "ckpt_path" in kwargs:
-        print("Loaded checkpoint", kwargs["ckpt_path"])
-        model.load_state_dict(torch.load(kwargs["ckpt_path"], map_location=torch.device('cpu')))
-    elif "ckpt_path" in cfg:
-        print("Loaded checkpoint", cfg["ckpt_path"])
-        model.load_state_dict(torch.load(cfg["ckpt_path"]))
+    # Determine checkpoint path preference: explicit kwargs > config
+    ckpt_path = model_kwargs.get("ckpt_path", None)
+
+    # Helper to try loading a checkpoint if it exists
+    def _try_load(path):
+        if not path:
+            return False
+        if not os.path.exists(path):
+            return False
+        try:
+            print("Loaded checkpoint", path)
+            model.load_state_dict(torch.load(path, map_location=torch.device(device)))
+            return True
+        except Exception as e:
+            print(f"Failed loading checkpoint {path}: {e}")
+            return False
+
+    loaded = False
+    # Try explicit ckpt_path first
+    if ckpt_path:
+        loaded = _try_load(ckpt_path)
+
+    # If explicit path not loaded, try config default
+    if not loaded and "ckpt_path" in cfg and cfg["ckpt_path"]:
+        loaded = _try_load(cfg["ckpt_path"])
+
+    if not loaded:
+        print("No checkpoint loaded for PIDNet (continuing with randomly initialized weights)")
 
     return model
 
 
+
+
 class PIDNet(nn.Module):
 
-    def __init__(self, m=2, n=3, num_classes=19, planes=64, ppm_planes=96, head_planes=128, augment=True):
+    def __init__(self, m=2, n=3, num_classes=19, planes=64, ppm_planes=96, head_planes=128, dropout_rate = 0.2, augment=True, is_trainable=True):
         super(PIDNet, self).__init__()
         self.augment = augment
-        
+        self.is_trainable = is_trainable
         # I Branch
         self.conv1 =  nn.Sequential(
                           nn.Conv2d(3,planes,kernel_size=3, stride=2, padding=1),
@@ -58,10 +84,16 @@ class PIDNet(nn.Module):
         self.layer1 = self._make_layer(BasicBlock, planes, planes, m)
         self.layer2 = self._make_layer(BasicBlock, planes, planes * 2, m, stride=2)
         self.layer3 = self._make_layer(BasicBlock, planes * 2, planes * 4, n, stride=2)
+
+        # self.att3 = SelfAttention(planes * 4)
         self.layer4 = self._make_layer(BasicBlock, planes * 4, planes * 8, n, stride=2)
+
+        # self.att4 = SelfAttention(planes * 8)
         self.layer5 =  self._make_layer(Bottleneck, planes * 8, planes * 8, 2, stride=2)
+
+        # self.att5 = SelfAttention(planes * 8 * 2)
         
-        # P Branch
+        # P Branch >> Original Block <<
         self.compression3 = nn.Sequential(
                                           nn.Conv2d(planes * 4, planes * 2, kernel_size=1, bias=False),
                                           BatchNorm2d(planes * 2, momentum=bn_mom),
@@ -71,6 +103,14 @@ class PIDNet(nn.Module):
                                           nn.Conv2d(planes * 8, planes * 2, kernel_size=1, bias=False),
                                           BatchNorm2d(planes * 2, momentum=bn_mom),
                                           )
+
+        # Drop out conv
+
+        # self.compression3 = DropoutConv(planes * 4, planes * 2, dropout_rate=dropout_rate)
+        
+        # self.compression4 = DropoutConv(planes * 8, planes * 2, dropout_rate=dropout_rate)
+    
+
         self.pag3 = PagFM(planes * 2, planes)
         self.pag4 = PagFM(planes * 2, planes)
 
@@ -82,6 +122,8 @@ class PIDNet(nn.Module):
         if m == 2:
             self.layer3_d = self._make_single_layer(BasicBlock, planes * 2, planes)
             self.layer4_d = self._make_layer(Bottleneck, planes, planes, 1)
+
+            # D branch original
             self.diff3 = nn.Sequential(
                                         nn.Conv2d(planes * 4, planes, kernel_size=3, padding=1, bias=False),
                                         BatchNorm2d(planes, momentum=bn_mom),
@@ -90,11 +132,19 @@ class PIDNet(nn.Module):
                                      nn.Conv2d(planes * 8, planes * 2, kernel_size=3, padding=1, bias=False),
                                      BatchNorm2d(planes * 2, momentum=bn_mom),
                                      )
+
+            # D branch dropout
+
+            # self.diff3 = DropoutConv(planes * 4, planes, dropout_rate=dropout_rate)
+            # self.diff4 = DropoutConv(planes * 8, planes * 2, dropout_rate=dropout_rate)
+
             self.spp = PAPPM(planes * 16, ppm_planes, planes * 4)
             self.dfm = Light_Bag(planes * 4, planes * 4)
         else:
             self.layer3_d = self._make_single_layer(BasicBlock, planes * 2, planes * 2)
             self.layer4_d = self._make_single_layer(BasicBlock, planes * 2, planes * 2)
+
+            #Original 
             self.diff3 = nn.Sequential(
                                         nn.Conv2d(planes * 4, planes * 2, kernel_size=3, padding=1, bias=False),
                                         BatchNorm2d(planes * 2, momentum=bn_mom),
@@ -103,6 +153,11 @@ class PIDNet(nn.Module):
                                      nn.Conv2d(planes * 8, planes * 2, kernel_size=3, padding=1, bias=False),
                                      BatchNorm2d(planes * 2, momentum=bn_mom),
                                      )
+
+            #Drop out blocks
+            # self.diff3 = DropoutConv(planes * 4, planes * 2, dropout_rate=dropout_rate)
+            # self.diff4 = DropoutConv(planes * 8, planes * 2, dropout_rate=dropout_rate)
+
             self.spp = DAPPM(planes * 16, ppm_planes, planes * 4)
             self.dfm = Bag(planes * 4, planes * 4)
             
@@ -159,19 +214,20 @@ class PIDNet(nn.Module):
 
     def forward(self, x):
 
-
         x = self.conv1(x)
         x = self.layer1(x)
         x = self.relu(self.layer2(self.relu(x)))
+
         x_ = self.layer3_(x)
         x_d = self.layer3_d(x)
-        
-        height_output = x_d.shape[-2]
         width_output = x_d.shape[-1]
-        
+        height_output = x_d.shape[-2] 
         x = self.relu(self.layer3(x))
+
+        # if self.is_trainable:
+        #     x = self.att3(x)
+            
         x_ = self.pag3(x_, self.compression3(x))
-        logging.debug(f"x shape: {x.shape}, x_ shape: {x_.shape}, x_d shape: {x_d.shape}")
         x_d = x_d + F.interpolate(
                         self.diff3(x),
                         size=[height_output, width_output],
@@ -180,6 +236,9 @@ class PIDNet(nn.Module):
             temp_p = x_
         
         x = self.relu(self.layer4(x))
+        # if self.is_trainable:
+        #     # print("on att 4")
+        #     x = self.att4(x)
         x_ = self.layer4_(self.relu(x_))
         x_d = self.layer4_d(self.relu(x_d))
         
@@ -193,10 +252,19 @@ class PIDNet(nn.Module):
             
         x_ = self.layer5_(self.relu(x_))
         x_d = self.layer5_d(self.relu(x_d))
-        x = F.interpolate(
-                        self.spp(self.layer5(x)),
-                        size=[height_output, width_output],
-                        mode='bilinear', align_corners=algc)
+
+        if self.is_trainable:
+            # print("on att 5")
+            x = self.layer5(x) # 
+            x = F.interpolate(
+                self.spp(x),
+                size=[height_output, width_output],
+                mode='bilinear', align_corners=algc)
+        else: 
+            x = F.interpolate(
+                            self.spp(self.layer5(x)),
+                            size=[height_output, width_output],
+                            mode='bilinear', align_corners=algc)
 
         x_ = self.final_layer(self.dfm(x_, x, x_d))
 
@@ -296,7 +364,5 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
     FPS = 1000 / latency
     print(FPS)
-    
-    
     
 
