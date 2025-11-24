@@ -59,10 +59,6 @@ class CondAttributionWithTiming(CondAttribution):
 
         if composite is None:
             composite = Composite()
-        
-        # Ensure data dtype/device matches model before forward
-        mp = next(self.model.parameters())
-        data = data.to(dtype=mp.dtype, device=mp.device)
 
         with mask_composite.context(self.model), composite.context(self.model) as modified:
 
@@ -385,9 +381,6 @@ class FeatureVisualizationMultiTarget(FeatureVisualization):
         heatmaps = []
         for b in range(batches):
             data_batch = data[b * batch_size: (b + 1) * batch_size].detach().requires_grad_()
-            # Align dtype/device to model and enable grads
-            mp = next(self.attribution.model.parameters())
-            data_batch = data_batch.to(dtype=mp.dtype, device=mp.device).detach().requires_grad_()
 
             if targets is None:
                 start_layer = layer_name
@@ -416,21 +409,7 @@ class FeatureVisualizationMultiTarget(FeatureVisualization):
                 attr = self.attribution(data_batch, conditions, composite, start_layer=start_layer,
                                         on_device=self.device, exclude_parallel=exlude_parallel)
 
-            heatmap = attr.heatmap
-            if torch.is_tensor(heatmap):
-                heatmap_cpu = heatmap.detach().cpu()
-            elif isinstance(heatmap, (list, tuple)):
-                heatmap_cpu = torch.stack([
-                    h.detach().cpu() if torch.is_tensor(h) else torch.as_tensor(h)
-                    for h in heatmap
-                ])
-            else:
-                heatmap_cpu = torch.as_tensor(heatmap)
-            heatmaps.append(heatmap_cpu)
-
-            del attr
-            del data_batch
-            torch.cuda.empty_cache()
+            heatmaps.append(attr.heatmap)
 
         return torch.cat(heatmaps, dim=0)
 
