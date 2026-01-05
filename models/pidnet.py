@@ -22,7 +22,7 @@ algc = False
 CONFIGS = {
     "pidnet": {
         "classes": 2,
-        "ckpt_path": "../models/checkpoints/flood_s_best_pidnet_modified.pt",
+        "ckpt_path": None#"../models/checkpoints/flood_s_best_pidnet_modified.pt",
     }
 }
 
@@ -47,6 +47,8 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     # Load checkpoint if provided
     ckpt_path = cfg.get("ckpt_path")
     if ckpt_path is None:
+        model = model.to(device)
+        return model
         raise ValueError("No checkpoint path provided. Pass `ckpt_path` to get_pidnet(...)")
 
     print(f"Loading checkpoint from: {ckpt_path}")

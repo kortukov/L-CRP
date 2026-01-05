@@ -34,30 +34,14 @@ class InterpolateWrapper(nn.Module):
 
 # Canonizer for PIDNet
 class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
-    def __init__(self):
-        super().__init__(self._attribute_map)
-
-    def apply(self, root_module):
-        '''Overload the attributes for all applicable modules.
-
-        Parameters
-        ----------
-        root_module: obj:`torch.nn.Module`
-            Root module for which underlying modules will have their attributes overloaded.
-
-        Returns
-        -------
-        instances : list of obj:`Canonizer`
-            The applied canonizer instances, which may be removed by calling `.remove`.
-        '''
-        instances = []
-        for name, module in root_module.named_modules():
-            attributes = self.attribute_map(name, module)
-            if attributes is not None:
-                instance = self.__class__() # this should be changed in zennit :/
-                instance.register(module, attributes)
-                instances.append(instance)
-        return instances
+    def __init__(self, attribute_map=None):
+        if attribute_map is None:
+            attribute_map=self._attribute_map
+        super().__init__(attribute_map)
+    
+    def copy(self):
+        return PIDNetBaseCanonizer()
+    
     @classmethod
     def _attribute_map(cls, name, module):
         # BasicBlock
@@ -115,7 +99,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
                 mdl.bias.data = self.module.orig_scale_process_params["params"]["bias"]
             self.module.scale_process[2] = mdl
         for key in self.attribute_keys:
-            if key !="scale_process":
+            if key != "scale_process" and hasattr(self.module, key):
                 delattr(self.module, key)
 
     @staticmethod
@@ -178,7 +162,6 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
             return out
         else:
             return self.relu(out)
-
 
     @staticmethod
     def forward_bottleneck(self, x):
