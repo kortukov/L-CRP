@@ -20,22 +20,22 @@ from zennit.canonizers import Canonizer
 class PIDNetCanonizer(Canonizer):
     # New Module that computes the same functions as model, including layer wrappers and canonizations
 
-    def canonize(self, layer, additional_canonizer=None):
+    def canonize(self, layer, additional_canonizers=None, submodule_names=None):
         h1 = PIDNetBaseCanonizer().apply(layer)
-        self.handles+=h1
-        if additional_canonizer is not None:
-            h2 = additional_canonizer.apply(layer)
-            self.handles += h2
-
-    def BNConvCanonization(self, layer):
-        h1 = PIDNetBaseCanonizer().apply(layer)
-        h2 = CorrectSequentialMergeBatchNorm().apply(layer)
-        self.handles += h1 + h2
-
-    def BNReLUConvCanonization(self, layer):
-        h1 = PIDNetBaseCanonizer().apply(layer)
-        h2 = ThreshReLUMergeBatchNorm().apply(layer)
-        self.handles += h1 + h2
+        self.handles += h1
+        if not isinstance(additional_canonizers, list):
+            if not isinstance(submodule_names, list):
+                additional_canonizers = [additional_canonizers]
+                submodule_names = [submodule_names]
+            else:
+                additional_canonizers=[additional_canonizers]*len(submodule_names)
+        for i, canonizer in enumerate(additional_canonizers):
+            obj = layer
+            if submodule_names[i] is not None:
+                obj = getattr(obj, submodule_names[i])
+            if canonizer is not None:
+                h2 = canonizer.apply(obj)
+                self.handles += h2
 
     def register(self, model):
         self.handles = []
@@ -51,17 +51,28 @@ class PIDNetCanonizer(Canonizer):
 
         # D Branch
         d_branch = ["layer3_d", "layer4_d", "diff3", "diff4", "layer5_d"]
-        for k in i_branch+p_branch+d_branch:
+        for k in i_branch + p_branch + d_branch:
             self.canonize(getattr(model, k), CorrectSequentialMergeBatchNorm())
-        self.canonize(model.spp, ThreshReLUMergeBatchNorm())
-        # self.BNConvReLUCanonization(model.dfm)
-
+        TReLU_modules = [
+            "scale1",
+            "scale2",
+            "scale3",
+            "scale4",
+            "scale0",
+            "scale_process",
+            "compression",
+            "shortcut",
+        ]
+        self.canonize(model.spp, ThreshReLUMergeBatchNorm(), TReLU_modules)
+        # self.ConvBNCanonization(model.dfm) # TODO
         # Prediction Head
-        # if model.augment:
-        # self.seghead_p = segmenthead(planes * 2, head_planes, num_classes)
-        # self.seghead_d = segmenthead(planes * 2, planes, 1)
-
-        # self.final_layer = segmenthead(planes * 4, head_planes, num_classes)
+        segheads = ["final_layer"] + ["seghead_p", "seghead_d"] if model.augment else []
+        for sh_layer in segheads:
+            self.canonize(
+                getattr(model, sh_layer),
+                [CorrectSequentialMergeBatchNorm(), ThreshReLUMergeBatchNorm()],
+                ["sequential", "sequential"],
+            )
 
     def remove(self):
         self.handles.reverse()

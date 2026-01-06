@@ -1,14 +1,11 @@
-
-import os
-import sys
-
-sys.path.append(os.getcwd())
 import torch
-from zennit.canonizers import Canonizer, CompositeCanonizer, MergeBatchNorm, SequentialMergeBatchNorm
+from zennit.canonizers import AttributeCanonizer, CompositeCanonizer, MergeBatchNorm, SequentialMergeBatchNorm
 from zennit.core import collect_leaves
 from zennit.types import ConvolutionTranspose
 from torch.nn.modules.activation import ReLU
-from torch.nn import AdaptiveAvgPool2d
+from torch.nn import AdaptiveAvgPool2d, Sequential
+from torchvision.models import DenseNet
+import torchvision
 
 
 class CorrectCompositeCanonizer(CompositeCanonizer):
@@ -53,7 +50,6 @@ class CorrectSequentialMergeBatchNorm(SequentialMergeBatchNorm):
         return instances
 
     def merge_batch_norm(self, modules, batch_norm):
-        # print(f"(Correctly) Merging BN")
         self.batch_norm_eps = batch_norm.eps
         super(CorrectSequentialMergeBatchNorm, self).merge_batch_norm(modules, batch_norm)
         batch_norm.eps = 0.
@@ -171,9 +167,6 @@ class SequentialMergeBatchNormtoRight(MergeBatchNorm):
                 index = (None, slice(None), *((None,) * (original_weight.ndim - 2)))
 
             # merge batch_norm into linear layer to the right
-            scale_device = scale[index].device
-            original_weight = original_weight.to(scale_device)
-            original_bias = original_bias.to(scale_device)
             module.weight.data = (original_weight * scale[index])
 
             # module.bias.data = original_bias
@@ -201,6 +194,54 @@ class SequentialMergeBatchNormtoRight(MergeBatchNorm):
         batch_norm.eps = 0.
         return return_handles
 
+
+class DenseNetAdaptiveAvgPoolCanonizer(AttributeCanonizer):
+    '''Canonizer specifically for AdaptiveAvgPooling2d layers at the end of torchvision.model densenet models.'''
+
+    def __init__(self):
+        super().__init__(self._attribute_map)
+
+    @classmethod
+    def _attribute_map(cls, name, module):
+
+        if isinstance(module, DenseNet):
+            attributes = {
+                'forward': cls.forward.__get__(module),
+            }
+            return attributes
+        return None
+
+    def copy(self):
+        '''Copy this Canonizer.
+
+        Returns
+        -------
+        obj:`Canonizer`
+            A copy of this Canonizer.
+        '''
+        return DenseNetAdaptiveAvgPoolCanonizer()
+
+    def register(self, module, attributes):
+        module.features.add_module('final_relu', ReLU(inplace=True))
+        module.features.add_module('adaptive_avg_pool2d', AdaptiveAvgPool2d((1, 1)))
+        super(DenseNetAdaptiveAvgPoolCanonizer, self).register(module, attributes)
+
+    def remove(self):
+        '''Remove the overloaded attributes. Note that functions are descriptors, and therefore not direct attributes
+        of instance, which is why deleting instance attributes with the same name reverts them to the original
+        function.
+        '''
+        self.module.features = Sequential(*list(self.module.features.children())[:-2])
+        for key in self.attribute_keys:
+            delattr(self.module, key)
+
+    def forward(self, x):
+        out = self.features(x)
+        out = torch.flatten(out, 1)
+        out = self.classifier(out)
+        return out
+
+
 class ThreshReLUMergeBatchNorm(SequentialMergeBatchNormtoRight):
     # Hook functions for ReLU_thresh
     @staticmethod
@@ -219,38 +260,27 @@ class ThreshReLUMergeBatchNorm(SequentialMergeBatchNormtoRight):
         super().__init__()
         self.relu = None
 
-    @torch.no_grad()    # Need to force no_grad, as this will otherwise cause issues with CRP visiulization, trying to backward thorugh the graph multiple times
     def apply(self, root_module):
         instances = []
         oldest_leaf = None
         old_leaf = None
         mid_leaf = None
-        counter = 0
-        merged_adaptive_pooling = False
         for leaf in collect_leaves(root_module):
-            # if isinstance(mid_leaf, AdaptiveAvgPool2d):
-            #     print("mid_leaf is Adaptive!")
-            #     print(".")
             if isinstance(old_leaf, self.batch_norm_type) and isinstance(mid_leaf, ReLU) and isinstance(leaf,
                                                                                                         self.linear_type):
-                if not (torch.all(old_leaf.weight==1.) and torch.all(old_leaf.bias==0.)):
-                    instance = self.copy()
-                    counter += 1
-                    # print(f"[{counter}] Registering ThreshRelu: {leaf}/{old_leaf}")
-                    instance.register((leaf,), old_leaf, mid_leaf)
-                    instances.append(instance)
+                instance = self.copy()
+                instance.register((leaf,), old_leaf, mid_leaf)
+                instances.append(instance)
             elif isinstance(oldest_leaf, self.batch_norm_type) and isinstance(old_leaf, ReLU) and isinstance(mid_leaf,
                                                                                                              AdaptiveAvgPool2d) and isinstance(
                 leaf, self.linear_type):
-                print("TRYING TO CANONIZE THROUGH AVGPOOL!")
                 instance = self.copy()
-                merged_adaptive_pooling = True
                 instance.register((leaf,), oldest_leaf, old_leaf)
                 instances.append(instance)
             oldest_leaf = old_leaf
             old_leaf = mid_leaf
             mid_leaf = leaf
-        #assert merged_adaptive_pooling, "Did not find AdaptiveAvgPool2d!"
+
         return instances
 
     def register(self, linears, batch_norm, relu):
@@ -264,7 +294,6 @@ class ThreshReLUMergeBatchNorm(SequentialMergeBatchNormtoRight):
             Batch Normalization module with mandatory attributes
             `running_mean`, `running_var`, `weight`, `bias` and `eps`
         '''
-        # print(f"Registering ThreshRELU")
         self.relu = relu
 
         denominator = (batch_norm.running_var + batch_norm.eps) ** .5
@@ -285,9 +314,64 @@ class ThreshReLUMergeBatchNorm(SequentialMergeBatchNormtoRight):
         super().remove()
         delattr(self.relu, "canonization_params")
 
+
 class SequentialThreshCanonizer(CorrectCompositeCanonizer):
     def __init__(self):
         super().__init__((
+            DenseNetAdaptiveAvgPoolCanonizer(),
             CorrectSequentialMergeBatchNorm(),
             ThreshReLUMergeBatchNorm(),
         ))
+
+
+#Use this canonizer to reproduce results in the paper
+class ThreshSequentialCanonizer(CorrectCompositeCanonizer):
+    def __init__(self):
+        super().__init__((
+            DenseNetAdaptiveAvgPoolCanonizer(),
+            ThreshReLUMergeBatchNorm(),
+            CorrectSequentialMergeBatchNorm(),
+        ))
+
+class DefaultDenseNetCanonizer(CorrectCompositeCanonizer):
+    def __init__(self):
+        super().__init__((
+            DenseNetAdaptiveAvgPoolCanonizer(),
+        ))
+
+if __name__=='__main__':
+    #Sanity check for canonization
+    N = 100
+    torch.random.manual_seed(42)
+    cont=True
+
+    model = torchvision.models.densenet121(pretrained=True)
+    for leaf in collect_leaves(model):
+        print(leaf)
+    model.to(torch.device('cpu'))
+    model.eval()
+    while(cont):
+        for canon in [
+        CorrectSequentialMergeBatchNorm(),
+        SequentialThreshCanonizer(),
+        ThreshSequentialCanonizer()
+        ]:
+            x = torch.rand(N, 3, 224, 224, device="cpu")
+            with torch.no_grad():
+                y1 = model(x)
+
+
+            handles = canon.apply(model)
+            with torch.no_grad():
+                y2 = model(x)
+
+            print(f"{torch.norm(y2 - y1)} for input with norm {torch.norm(x)}")
+
+            for h in handles:
+                h.remove()
+            with torch.no_grad():
+                y2 = model(x)
+            print(f"{torch.norm(y2 - y1)} after detach")
+            print("\n\n=====\n\n")
+        a=input()
+        cont=(a!="q")

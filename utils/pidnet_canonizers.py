@@ -12,11 +12,13 @@ from zennit.layer import Sum
 from zennit.rules import Epsilon
 
 
-
 algc = False
 
+
 class InterpolateWrapper(nn.Module):
-    def __init__(self, size=None, scale_factor=None, mode='bilinear', align_corners=False):
+    def __init__(
+        self, size=None, scale_factor=None, mode="bilinear", align_corners=False
+    ):
         super().__init__()
         self.size = size
         self.scale_factor = scale_factor
@@ -25,72 +27,98 @@ class InterpolateWrapper(nn.Module):
 
     def forward(self, x):
         return F.interpolate(
-            x, 
-            size=self.size, 
-            scale_factor=self.scale_factor, 
-            mode=self.mode, 
-            align_corners=self.align_corners
+            x,
+            size=self.size,
+            scale_factor=self.scale_factor,
+            mode=self.mode,
+            align_corners=self.align_corners,
         )
+
 
 # Canonizer for PIDNet
 class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
     def __init__(self, attribute_map=None):
         if attribute_map is None:
-            attribute_map=self._attribute_map
+            attribute_map = self._attribute_map
         super().__init__(attribute_map)
-    
+
     def copy(self):
         return PIDNetBaseCanonizer()
-    
+
     @classmethod
     def _attribute_map(cls, name, module):
         # BasicBlock
         if module.__class__.__name__ == "BasicBlock":
             return {
-                'forward': cls.forward_basicblock.__get__(module),
-                'canonizer_sum': Sum()
+                "forward": cls.forward_basicblock.__get__(module),
+                "canonizer_sum": Sum(),
             }
 
         # Bottleneck
         if module.__class__.__name__ == "Bottleneck":
             return {
-                'forward': cls.forward_bottleneck.__get__(module),
-                'canonizer_sum': Sum()
+                "forward": cls.forward_bottleneck.__get__(module),
+                "canonizer_sum": Sum(),
             }
 
         # PAPPM
         if module.__class__.__name__ == "PAPPM":
             return {
-                'forward': cls.forward_pappm.__get__(module),
-                'canonizer_sum': Sum(),
-                'orig_scale_process_params': cls.get_conv_layer_params(module.scale_process[2]),
-                'scale_process': cls.convert_grouped_conv_to_regular(module.scale_process)
+                "forward": cls.forward_pappm.__get__(module),
+                "canonizer_sum": Sum(),
+                "orig_scale_process_params": cls.get_conv_layer_params(
+                    module.scale_process[2]
+                ),
+                "scale_process": cls.convert_grouped_conv_to_regular(
+                    module.scale_process
+                ),
             }
 
         # Light_Bag
         if module.__class__.__name__ == "Light_Bag":
             return {
-                'forward': cls.forward_lightbag_branch_i_only.__get__(module),
-                'canonizer_sum': Sum()
+                "forward": cls.forward_lightbag_branch_i_only.__get__(module),
+                "canonizer_sum": Sum(),
             }
-
+        # segmenthead
+        if module.__class__.__name__ == "segmenthead":
+            return {
+                "forward": cls.forward_segmenthead.__get__(module),
+                "canonizer_sum": Sum(),
+                "sequential": cls.get_segmenthead_sequential(module),
+            }
         return None
+
+    @staticmethod
+    def get_segmenthead_sequential(segmenthead):
+        seq = torch.nn.Sequential()
+        seq.add_module("bn1", deepcopy(segmenthead.bn1))
+        seq.add_module("relu1", torch.nn.ReLU())
+        seq.add_module("conv1", deepcopy(segmenthead.conv1))
+        seq.add_module("bn2", deepcopy(segmenthead.bn2))
+        seq.add_module("relu2", torch.nn.ReLU())
+        seq.add_module("conv2", deepcopy(segmenthead.conv2))
+        return seq
+
     @staticmethod
     def get_conv_layer_params(conv_g):
         return {
-            "init": {"in_channels": conv_g.in_channels,
-            "out_channels": conv_g.out_channels,
-            "kernel_size": conv_g.kernel_size,
-            "stride": conv_g.stride,
-            "padding": conv_g.padding,
-            "dilation": conv_g.dilation,
-            "bias": (conv_g.bias is not None),
-            "groups": conv_g.groups},
-            "params":{
+            "init": {
+                "in_channels": conv_g.in_channels,
+                "out_channels": conv_g.out_channels,
+                "kernel_size": conv_g.kernel_size,
+                "stride": conv_g.stride,
+                "padding": conv_g.padding,
+                "dilation": conv_g.dilation,
+                "bias": (conv_g.bias is not None),
+                "groups": conv_g.groups,
+            },
+            "params": {
                 "weight": conv_g.weight.data.detach(),
-                "bias": conv_g.bias.data.detach() if conv_g.bias is not None else None
-            }
+                "bias": conv_g.bias.data.detach() if conv_g.bias is not None else None,
+            },
         }
+
     def remove(self):
         if "orig_scale_process_params" in self.attribute_keys:
             mdl = nn.Conv2d(**self.module.orig_scale_process_params["init"])
@@ -104,8 +132,8 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
 
     @staticmethod
     def convert_grouped_conv_to_regular(seq):
-        new_seq=deepcopy(seq)
-        conv_g=seq[2]
+        new_seq = deepcopy(seq)
+        conv_g = seq[2]
         G = conv_g.groups
         Cin_per_group = conv_g.in_channels // G
         Cout_per_group = conv_g.out_channels // G
@@ -119,7 +147,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
             padding=conv_g.padding,
             dilation=conv_g.dilation,
             bias=(conv_g.bias is not None),
-            groups=1
+            groups=1,
         )
 
         # Zero all weights first
@@ -141,7 +169,20 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
                 conv_regular.bias.copy_(conv_g.bias)
         new_seq[2] = conv_regular
         return new_seq
-    
+
+    @staticmethod
+    def forward_segmenthead(self, x):
+        out = self.sequential(x)
+        if self.scale_factor is not None:
+            height = x.shape[-2] * self.scale_factor
+            width = x.shape[-1] * self.scale_factor
+            self.interp1 = InterpolateWrapper(
+                size=[height, width], mode="bilinear", align_corners=algc
+            )
+            out = self.interp1(out)
+
+        return out
+
     @staticmethod
     def forward_basicblock(self, x):
         residual = x
@@ -190,12 +231,20 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
     @staticmethod
     def forward_pappm(self, x):
         width = x.shape[-1]
-        height = x.shape[-2]        
+        height = x.shape[-2]
         scale_list = []
-        self.interp1 = InterpolateWrapper(size=[height, width], mode='bilinear', align_corners=algc)
-        self.interp2 = InterpolateWrapper(size=[height, width],mode='bilinear', align_corners=algc)
-        self.interp3 = InterpolateWrapper(size=[height, width],mode='bilinear', align_corners=algc)
-        self.interp4 = InterpolateWrapper(size=[height, width],mode='bilinear', align_corners=algc)
+        self.interp1 = InterpolateWrapper(
+            size=[height, width], mode="bilinear", align_corners=algc
+        )
+        self.interp2 = InterpolateWrapper(
+            size=[height, width], mode="bilinear", align_corners=algc
+        )
+        self.interp3 = InterpolateWrapper(
+            size=[height, width], mode="bilinear", align_corners=algc
+        )
+        self.interp4 = InterpolateWrapper(
+            size=[height, width], mode="bilinear", align_corners=algc
+        )
 
         x_ = self.scale0(x)
 
@@ -203,7 +252,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         s2 = self.interp2(self.scale2(x))
         s3 = self.interp3(self.scale3(x))
         s4 = self.interp4(self.scale4(x))
-        
+
         scale_list.append(self.canonizer_sum(torch.stack([s1, x_], dim=-1)))
         scale_list.append(self.canonizer_sum(torch.stack([s2, x_], dim=-1)))
         scale_list.append(self.canonizer_sum(torch.stack([s3, x_], dim=-1)))
@@ -211,29 +260,33 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         # scale_list.append(self.canonizer_sum(torch.stack([s2, x_], dim=-1)))
 
         scale_out = self.scale_process(torch.cat(scale_list, 1))
-
+        compression_out = self.compression(torch.cat([x_, scale_out], 1))
+        shortcut_out = self.shortcut(x)
         # Here is some error with gradient, that dimensions do not correspond (on forward pass no problem).
-        out = self.compression(torch.cat([x_,scale_out],1)) + self.shortcut(x)
+        out = self.canonizer_sum(torch.stack([compression_out, shortcut_out], dim=-1))
         return out
-    
+
     @staticmethod
     def forward_lightbag_branch_i_only(self, p, i, d):
-        # Detaching branches P and D here 
+        # Detaching branches P and D here
         edge_att = torch.sigmoid(d).detach()
-        
-        p_add = self.conv_p((1-edge_att)*i + p.detach())
-        i_add = self.conv_i(i + edge_att*p.detach())
-        
+
+        p_add = self.conv_p((1 - edge_att) * i + p.detach())
+        i_add = self.conv_i(i + edge_att * p.detach())
+
         return self.canonizer_sum(torch.stack([p_add, i_add], dim=-1))
 
 
 # Top-level composite canonizer to combine canonization strategies
 class PIDNetCanonizer(zcanon.CompositeCanonizer):
     def __init__(self):
-        super().__init__((
-            PIDNetBaseCanonizer(),
-            SequentialThreshCanonizer(),
-        ))
+        super().__init__(
+            (
+                PIDNetBaseCanonizer(),
+                SequentialThreshCanonizer(),
+            )
+        )
+
 
 class EpsilonPlusFlatforPIDNet(EpsilonPlusFlat):
     def __init__(self, canonizers=None):
