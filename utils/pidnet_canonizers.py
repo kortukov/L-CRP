@@ -1,5 +1,12 @@
 from copy import deepcopy
-from LCRP.utils.base_canonizers import SequentialThreshCanonizer
+from LCRP.models.pidnet import PIDNet
+from LCRP.utils.base_canonizers import (
+    CorrectSequentialMergeBatchNorm,
+    ThreshReLUMergeBatchNorm,
+)
+import torch
+from copy import deepcopy
+from zennit.canonizers import Canonizer
 import zennit.canonizers as zcanon
 from zennit.layer import Sum
 import torch
@@ -9,10 +16,27 @@ import torch.nn as nn
 import torch
 from zennit.composites import EpsilonPlusFlat
 from zennit.layer import Sum
-from zennit.rules import Epsilon
+from zennit.rules import Epsilon, Norm, Pass
+from zennit.core import Hook, BasicHook
 
 
 algc = False
+
+
+class SigmoidWrapper(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return torch.sigmoid(x)
+
+
+class Mult(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, weight, signal):
+        return weight * signal
 
 
 class InterpolateWrapper(nn.Module):
@@ -47,6 +71,12 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
 
     @classmethod
     def _attribute_map(cls, name, module):
+        # PIDNet
+        # if module.__class__.__name__ == "PIDNet":
+        #     return {
+        #         "forward": cls.forward_pidnet.__get__(module),
+        #         "canonizer_sum": Sum(),
+        #     }
         # BasicBlock
         if module.__class__.__name__ == "BasicBlock":
             return {
@@ -77,8 +107,10 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         # Light_Bag
         if module.__class__.__name__ == "Light_Bag":
             return {
-                "forward": cls.forward_lightbag_branch_i_only.__get__(module),
+                "forward": cls.forward_lightbag.__get__(module),
                 "canonizer_sum": Sum(),
+                "canonizer_sigmoid": SigmoidWrapper(),
+                "canonizer_mult": Mult(),
             }
         # segmenthead
         if module.__class__.__name__ == "segmenthead":
@@ -86,6 +118,15 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
                 "forward": cls.forward_segmenthead.__get__(module),
                 "canonizer_sum": Sum(),
                 "sequential": cls.get_segmenthead_sequential(module),
+            }
+
+        # PagFM
+        if module.__class__.__name__ == "PagFM":
+            return {
+                "forward": cls.forward_pagfm.__get__(module),
+                "canonizer_sum": Sum(dim=1),
+                "canonizer_sigmoid": SigmoidWrapper(),
+                "canonizer_mult": Mult(),
             }
         return None
 
@@ -171,6 +212,57 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         return new_seq
 
     @staticmethod
+    def forward_pidnet(self, x):
+        width_output = x.shape[-1] // 8
+        height_output = x.shape[-2] // 8
+
+        x = self.conv1(x)
+        x = self.layer1(x)
+        x = self.relu(self.layer2(self.relu(x)))
+        x_ = self.layer3_(x)
+        x_d = self.layer3_d(x)
+
+        x = self.relu(self.layer3(x))
+        x_ = self.pag3(x_, self.compression3(x))
+        self.interp1 = InterpolateWrapper(
+            size=[height_output, width_output], mode="bilinear", align_corners=algc
+        )
+        term = self.interp1(self.diff3(x))
+        x_d = self.canonizer_sum(torch.stack([x_d, term], dim=-1))
+
+        if self.augment:
+            temp_p = x_
+
+        x = self.relu(self.layer4(x))
+        x_ = self.layer4_(self.relu(x_))
+        x_d = self.layer4_d(self.relu(x_d))
+
+        x_ = self.pag4(x_, self.compression4(x))
+        self.interp2 = InterpolateWrapper(
+            size=[height_output, width_output], mode="bilinear", align_corners=algc
+        )
+        term = self.interp2(self.diff4(x))
+        x_d = self.canonizer_sum(torch.stack([x_d, term], dim=-1))
+
+        if self.augment:
+            temp_d = x_d
+
+        x_ = self.layer5_(self.relu(x_))
+        x_d = self.layer5_d(self.relu(x_d))
+        self.interp3 = InterpolateWrapper(
+            size=[height_output, width_output], mode="bilinear", align_corners=algc
+        )
+        x = self.interp3(self.spp(self.layer5(x)))
+        x_ = self.final_layer(self.dfm(x_, x, x_d))
+
+        if self.augment:
+            x_extra_p = self.seghead_p(temp_p)
+            x_extra_d = self.seghead_d(temp_d)
+            return [x_extra_p, x_, x_extra_d]
+        else:
+            return x_
+
+    @staticmethod
     def forward_segmenthead(self, x):
         out = self.sequential(x)
         if self.scale_factor is not None:
@@ -182,6 +274,36 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
             out = self.interp1(out)
 
         return out
+
+    @staticmethod
+    def forward_pagfm(self, x, y):
+        input_size = x.size()
+        if self.after_relu:
+            y = self.relu(y)
+            x = self.relu(x)
+
+        y_q = self.f_y(y)
+        self.interp1 = InterpolateWrapper(
+            size=[input_size[2], input_size[3]], mode="bilinear", align_corners=False
+        )
+        y_q = self.interp1(y_q)
+        x_k = self.f_x(x)
+        # The order of Mult forward call does not matter here. if we are using equal distribution, order does not matter, if we are using signal takes all then sim_map will take 0 relevance anyways
+        term = self.canonizer_mult(x_k, y_q)
+        if self.with_channel:
+            sim_map = torch.sigmoid(self.up(term))
+        else:
+            sim_map = torch.sigmoid(
+                self.canonizer_sum(term).unsqueeze(1)
+            )  # self.canonizer_sum is Sum(dim=1)
+        self.interp2 = InterpolateWrapper(
+            size=[input_size[2], input_size[3]], mode="bilinear", align_corners=False
+        )
+        y = self.interp2(y)
+        term1 = self.canonizer_mult(1 - sim_map, x)
+        term2 = self.canonizer_mult(sim_map, y)
+        x = self.canonizer_sum(torch.stack([term1, term2], dim=1))
+        return x
 
     @staticmethod
     def forward_basicblock(self, x):
@@ -267,28 +389,159 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         return out
 
     @staticmethod
-    def forward_lightbag_branch_i_only(self, p, i, d):
+    def forward_lightbag(self, p, i, d):
         # Detaching branches P and D here
-        edge_att = torch.sigmoid(d).detach()
+        edge_att = self.canonizer_sigmoid(d)
+        term1 = self.canonizer_mult(1 - edge_att, i)
+        term2 = self.canonizer_mult(edge_att, p)
 
-        p_add = self.conv_p((1 - edge_att) * i + p.detach())
-        i_add = self.conv_i(i + edge_att * p.detach())
-
+        p_add = self.canonizer_sum(torch.stack([term1, p], dim=-1))
+        p_add = self.conv_p(p_add)
+        i_add = self.canonizer_sum(torch.stack([term2, i], dim=-1))
+        i_add = self.conv_i(i_add)
         return self.canonizer_sum(torch.stack([p_add, i_add], dim=-1))
 
 
-# Top-level composite canonizer to combine canonization strategies
-class PIDNetCanonizer(zcanon.CompositeCanonizer):
+class PIDNetCanonizer(Canonizer):
+    # New Module that computes the same functions as model, including layer wrappers and canonizations
+
     def __init__(self):
-        super().__init__(
-            (
-                PIDNetBaseCanonizer(),
-                SequentialThreshCanonizer(),
-            )
+        self.handles = []
+        super(PIDNetCanonizer).__init__()
+
+    def canonize(self, layer, additional_canonizers=None, submodule_names=None):
+        if not isinstance(additional_canonizers, list):
+            if not isinstance(submodule_names, list):
+                additional_canonizers = [additional_canonizers]
+                submodule_names = [submodule_names]
+            else:
+                additional_canonizers = [additional_canonizers] * len(submodule_names)
+        for i, canonizer in enumerate(additional_canonizers):
+            obj = layer
+            if submodule_names[i] is not None:
+                obj = getattr(obj, submodule_names[i], None)
+            if canonizer is not None and obj is not None:
+                h2 = canonizer.apply(obj)
+                self.handles += h2
+
+    def register(self, model):
+        self.handles += PIDNetBaseCanonizer().apply(model)
+        # I Branch
+        i_branch = ["conv1", "layer1", "layer2", "layer3", "layer4", "layer5"]
+
+        # P Branch
+        p_branch = ["compression3", "compression4", "layer3_", "layer4_", "layer5_"]
+        self.canonize(
+            model.pag3,
+            CorrectSequentialMergeBatchNorm(),
+            ["f_x", "f_y"] + ["up"] if model.pag3.with_channel else [],
+        )
+        self.canonize(
+            model.pag4,
+            CorrectSequentialMergeBatchNorm(),
+            ["f_x", "f_y"] + ["up"] if model.pag4.with_channel else [],
         )
 
+        # D Branch
+        d_branch = ["layer3_d", "layer4_d", "diff3", "diff4", "layer5_d"]
+        self.canonize(
+            model, CorrectSequentialMergeBatchNorm(), i_branch + p_branch + d_branch
+        )
 
-class EpsilonPlusFlatforPIDNet(EpsilonPlusFlat):
+        TReLU_modules = [
+            "scale1",
+            "scale2",
+            "scale3",
+            "scale4",
+            "scale0",
+            "scale_process",
+            "compression",
+            "shortcut",
+        ]
+        self.canonize(model.spp, ThreshReLUMergeBatchNorm(), TReLU_modules)
+        self.canonize(
+            model.dfm, CorrectSequentialMergeBatchNorm(), ["conv_p", "conv_i"]
+        )
+        # Prediction Head
+        segheads = ["final_layer"] + ["seghead_p", "seghead_d"] if model.augment else []
+        for sh_layer in segheads:
+            self.canonize(
+                getattr(model, sh_layer),
+                [CorrectSequentialMergeBatchNorm(), ThreshReLUMergeBatchNorm()],
+                ["sequential", "sequential"],
+            )
+
+    def remove(self):
+        self.handles.reverse()
+        for h in self.handles:
+            h.remove()
+
+    def apply(self, module):
+        if isinstance(module, PIDNet):
+            instance = self.copy()
+            instance.register(module)
+            return [instance]
+        else:
+            return []
+
+
+class SignalTakesAllMul(Hook):
+    def backward(self, module, grad_input, grad_output):
+        """
+        grad_output: tuple with one element (R_z)
+        grad_input: tuple with two elements (weight_grad, signal_grad)
+        """
+        R = grad_output[0]
+
+        # weight gets no relevance
+        R_weight = (
+            torch.zeros_like(grad_input[0]) if grad_input[0] is not None else None
+        )
+
+        # signal gets all relevance
+        R_signal = R
+
+        return (R_weight, R_signal)
+
+
+class FlatMul(Hook):
+    """
+    Flat (equal) relevance distribution for elementwise multiplication:
+    z = a * b
+
+    R_a = 0.5 * R_z
+    R_b = 0.5 * R_z
+    """
+
+    def backward(self, module, grad_input, grad_output):
+        # grad_output is a tuple with one element: R_z
+        R = grad_output[0]
+
+        # grad_input is (grad_a, grad_b)
+        R_a = 0.5 * R if grad_input[0] is not None else None
+        R_b = 0.5 * R if grad_input[1] is not None else None
+
+        return (R_a, R_b)
+
+
+class EpsilonPlusFlatBasePIDNet(EpsilonPlusFlat):
     def __init__(self, canonizers=None):
         super().__init__(canonizers=canonizers)
-        self.layer_map.append((InterpolateWrapper, Epsilon()))
+        self.layer_map += [
+            (InterpolateWrapper, Epsilon()),
+            (Sum, Norm()),
+            (SigmoidWrapper, Pass()),
+            (torch.nn.BatchNorm2d, Pass())
+        ]
+
+
+class EpsilonPlusFlatMulforPIDNet(EpsilonPlusFlatBasePIDNet):
+    def __init__(self, canonizers=None):
+        super().__init__(canonizers=canonizers)
+        self.layer_map += [(Mult, FlatMul)]
+
+
+class EpsilonPlusFlatforPIDNet(EpsilonPlusFlatBasePIDNet):
+    def __init__(self, canonizers=None):
+        super().__init__(canonizers=canonizers)
+        self.layer_map += [(Mult, SignalTakesAllMul)]
