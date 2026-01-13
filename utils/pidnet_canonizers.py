@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 import torch
-from zennit.composites import EpsilonPlusFlat
+from zennit.composites import EpsilonPlusFlat, LAYER_MAP_BASE
 from zennit.layer import Sum
 from zennit.rules import Epsilon, Norm, Pass
 from zennit.core import Hook, BasicHook
@@ -441,45 +441,48 @@ class PIDNetCanonizer(Canonizer):
                 self.handles += h2
 
     def register(self, model):
-        self.canonize(model)
+        pass
+        # self.canonize(model)
         # I Branch
-        i_branch = ["conv1", "layer1", "layer2", "layer3", "layer4", "layer5"]
+        #i_branch = ["conv1", "layer1", "layer2", "layer3", "layer4", "layer5"]
 
         # P Branch
-        p_branch = ["compression3", "compression4", "layer3_", "layer4_", "layer5_"]
-        self.canonize(
-            model.pag3,
-            CorrectSequentialMergeBatchNorm(),
-            ["f_x", "f_y"] + ["up"] if model.pag3.with_channel else [],
-        )
-        self.canonize(
-            model.pag4,
-            CorrectSequentialMergeBatchNorm(),
-            ["f_x", "f_y"] + ["up"] if model.pag4.with_channel else [],
-        )
+        #p_branch = ["compression3", "compression4", "layer3_", "layer4_", "layer5_"]
+        # self.canonize(
+        #     model.pag3,
+        #     CorrectSequentialMergeBatchNorm(),
+        #     ["f_x", "f_y"] + ["up"] if model.pag3.with_channel else [],
+        # )
+        # self.canonize(
+        #     model.pag4,
+        #     CorrectSequentialMergeBatchNorm(),
+        #     ["f_x", "f_y"] + ["up"] if model.pag4.with_channel else [],
+        # )
 
         # D Branch
-        d_branch = ["layer3_d", "layer4_d", "diff3", "diff4", "layer5_d"]
-        for layer in i_branch + p_branch + d_branch:
-            self.canonize(
-                getattr(model, layer), CorrectSequentialMergeBatchNorm()
-            )
+        #d_branch = ["layer3_d", "layer4_d", "diff3", "diff4", "layer5_d"]
+        #for layer in i_branch + p_branch + d_branch:
+       #     self.canonize(
+       #         getattr(model, layer), CorrectSequentialMergeBatchNorm()
+        #    )
 
+# PROBLEM
         TReLU_modules = [
-            "scale1",
-            "scale2",
-            "scale3",
-            "scale4",
-            "scale0",
-            "scale_process",
-            "compression",
-            "shortcut",
+           "scale1",
+           "scale2",
+           "scale3",
+           "scale4",
+           "scale0",
+           "scale_process",
+           "compression",
+           "shortcut",
         ]
         self.canonize(model.spp, ThreshReLUMergeBatchNorm(), TReLU_modules)
+
         self.canonize(
             model.dfm, CorrectSequentialMergeBatchNorm(), ["conv_p", "conv_i"]
         )
-        # Prediction Head
+        # Prediction Head 
         segheads = ["final_layer"] + ["seghead_p", "seghead_d"] if model.augment else []
         for sh_layer in segheads:
             self.canonize(
@@ -538,9 +541,8 @@ class FlatMul(Hook):
 class EpsilonPlusFlatBasePIDNet(EpsilonPlusFlat):
     def __init__(self, canonizers=None):
         super().__init__(canonizers=canonizers)
-        self.layer_map += [
+        self.layer_map += LAYER_MAP_BASE + [
             (InterpolateWrapper, Epsilon()),
-            (Sum, Norm()),
             (SigmoidWrapper, Pass()),
             (torch.nn.BatchNorm2d, Pass())
         ]
