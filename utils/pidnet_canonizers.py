@@ -36,7 +36,7 @@ class Mult(nn.Module):
         super().__init__()
 
     def forward(self, weight, signal):
-        return weight * signal
+        return torch.mul(weight, signal)
 
 
 class InterpolateWrapper(nn.Module):
@@ -69,14 +69,27 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
     def copy(self):
         return PIDNetBaseCanonizer()
 
+    def apply(self, module):
+        # This canonizer IS NOT RECURSIVE.
+        # PIDNetCanonizer handles submodules for our specific PIDNet arch.
+        # The roadblock for a PIDNet-general canonizer is module canonizers for modules not included in our module
+        # And also a way to account for the forward function of the root PIDNet module
+        instance = []
+        attributes = self.attribute_map(module.__class__.__name__, module)
+        if attributes is not None:
+            instance = self.copy()
+            instance.register(module, attributes)
+            instance = [instance]
+        return instance
+    
     @classmethod
     def _attribute_map(cls, name, module):
         # PIDNet
-        # if module.__class__.__name__ == "PIDNet":
-        #     return {
-        #         "forward": cls.forward_pidnet.__get__(module),
-        #         "canonizer_sum": Sum(),
-        #     }
+        if module.__class__.__name__ == "PIDNet":
+            return {
+                "forward": cls.forward_pidnet.__get__(module),
+                "canonizer_sum": Sum(),
+            }
         # BasicBlock
         if module.__class__.__name__ == "BasicBlock":
             return {
@@ -288,21 +301,23 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         )
         y_q = self.interp1(y_q)
         x_k = self.f_x(x)
-        # The order of Mult forward call does not matter here. if we are using equal distribution, order does not matter, if we are using signal takes all then sim_map will take 0 relevance anyways
-        term = self.canonizer_mult(x_k, y_q)
+        # if we are using equal distribution, order does not matter.
+        # if we are using signal takes all, then sim_map will take 0 relevance anyways.
+        # so order of Mult call does not matter here.
+        term = Mult()(x_k, y_q)
         if self.with_channel:
             sim_map = torch.sigmoid(self.up(term))
         else:
             sim_map = torch.sigmoid(
-                self.canonizer_sum(term).unsqueeze(1)
+                Sum(dim=1)(term).unsqueeze(1)
             )  # self.canonizer_sum is Sum(dim=1)
         self.interp2 = InterpolateWrapper(
             size=[input_size[2], input_size[3]], mode="bilinear", align_corners=False
         )
         y = self.interp2(y)
-        term1 = self.canonizer_mult(1 - sim_map, x)
-        term2 = self.canonizer_mult(sim_map, y)
-        x = self.canonizer_sum(torch.stack([term1, term2], dim=1))
+        term1 = Mult()(1 - sim_map, x)
+        term2 = Mult()(sim_map, y)
+        x = Sum(dim=1)(torch.stack([term1, term2], dim=1)) # when dim=1 is deleted, it throws error which is weiiiiirrrdd
         return x
 
     @staticmethod
@@ -384,7 +399,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         scale_out = self.scale_process(torch.cat(scale_list, 1))
         compression_out = self.compression(torch.cat([x_, scale_out], 1))
         shortcut_out = self.shortcut(x)
-        # Here is some error with gradient, that dimensions do not correspond (on forward pass no problem).
+
         out = self.canonizer_sum(torch.stack([compression_out, shortcut_out], dim=-1))
         return out
 
@@ -410,6 +425,7 @@ class PIDNetCanonizer(Canonizer):
         super(PIDNetCanonizer).__init__()
 
     def canonize(self, layer, additional_canonizers=None, submodule_names=None):
+        self.handles += PIDNetBaseCanonizer().apply(layer)
         if not isinstance(additional_canonizers, list):
             if not isinstance(submodule_names, list):
                 additional_canonizers = [additional_canonizers]
@@ -425,7 +441,7 @@ class PIDNetCanonizer(Canonizer):
                 self.handles += h2
 
     def register(self, model):
-        self.handles += PIDNetBaseCanonizer().apply(model)
+        self.canonize(model)
         # I Branch
         i_branch = ["conv1", "layer1", "layer2", "layer3", "layer4", "layer5"]
 
@@ -444,9 +460,10 @@ class PIDNetCanonizer(Canonizer):
 
         # D Branch
         d_branch = ["layer3_d", "layer4_d", "diff3", "diff4", "layer5_d"]
-        self.canonize(
-            model, CorrectSequentialMergeBatchNorm(), i_branch + p_branch + d_branch
-        )
+        for layer in i_branch + p_branch + d_branch:
+            self.canonize(
+                getattr(model, layer), CorrectSequentialMergeBatchNorm()
+            )
 
         TReLU_modules = [
             "scale1",
@@ -473,8 +490,9 @@ class PIDNetCanonizer(Canonizer):
 
     def remove(self):
         self.handles.reverse()
-        for h in self.handles:
+        for i, h in enumerate(self.handles):
             h.remove()
+            pass
 
     def apply(self, module):
         if isinstance(module, PIDNet):
@@ -486,6 +504,7 @@ class PIDNetCanonizer(Canonizer):
 
 
 class SignalTakesAllMul(Hook):
+    """Signal takes all relevance in multiplication"""
     def backward(self, module, grad_input, grad_output):
         """
         grad_output: tuple with one element (R_z)
@@ -493,10 +512,8 @@ class SignalTakesAllMul(Hook):
         """
         R = grad_output[0]
 
-        # weight gets no relevance
-        R_weight = (
-            torch.zeros_like(grad_input[0]) if grad_input[0] is not None else None
-        )
+        # weight gets no relevance  
+        R_weight = torch.zeros_like(grad_input[0]) if grad_input[0] is not None else None
 
         # signal gets all relevance
         R_signal = R
@@ -506,18 +523,12 @@ class SignalTakesAllMul(Hook):
 
 class FlatMul(Hook):
     """
-    Flat (equal) relevance distribution for elementwise multiplication:
-    z = a * b
-
-    R_a = 0.5 * R_z
-    R_b = 0.5 * R_z
+    Flat (equal) relevance distribution for elementwise multiplication
     """
-
     def backward(self, module, grad_input, grad_output):
-        # grad_output is a tuple with one element: R_z
         R = grad_output[0]
 
-        # grad_input is (grad_a, grad_b)
+        # Equal distribution
         R_a = 0.5 * R if grad_input[0] is not None else None
         R_b = 0.5 * R if grad_input[1] is not None else None
 
@@ -538,10 +549,10 @@ class EpsilonPlusFlatBasePIDNet(EpsilonPlusFlat):
 class EpsilonPlusFlatMulforPIDNet(EpsilonPlusFlatBasePIDNet):
     def __init__(self, canonizers=None):
         super().__init__(canonizers=canonizers)
-        self.layer_map += [(Mult, FlatMul)]
+        self.layer_map += [(Mult, FlatMul())]
 
 
 class EpsilonPlusFlatforPIDNet(EpsilonPlusFlatBasePIDNet):
     def __init__(self, canonizers=None):
         super().__init__(canonizers=canonizers)
-        self.layer_map += [(Mult, SignalTakesAllMul)]
+        self.layer_map += [(Mult, SignalTakesAllMul())]
