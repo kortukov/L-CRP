@@ -462,12 +462,12 @@ class PIDNetCanonizer(Canonizer):
         self.canonize(
             model.pag3,
             CorrectSequentialMergeBatchNorm(),
-            ["f_x", "f_y"] + ["up"] if model.pag3.with_channel else [],
+            ["f_x", "f_y"] + (["up"] if model.pag3.with_channel else []),
         )
         self.canonize(
             model.pag4,
             CorrectSequentialMergeBatchNorm(),
-            ["f_x", "f_y"] + ["up"] if model.pag4.with_channel else [],
+            ["f_x", "f_y"] + (["up"] if model.pag4.with_channel else []),
         )
 
         # D Branch
@@ -493,7 +493,7 @@ class PIDNetCanonizer(Canonizer):
             model.dfm, CorrectSequentialMergeBatchNorm(), ["conv_p", "conv_i"]
         )
         # Prediction Head 
-        segheads = ["final_layer"] + ["seghead_p", "seghead_d"] if model.augment else []
+        segheads = ["final_layer"] + (["seghead_p", "seghead_d"] if model.augment else [])
         for sh_layer in segheads:
             self.canonize(
                 getattr(model, sh_layer),
