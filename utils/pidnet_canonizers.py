@@ -36,6 +36,8 @@ class Mult(nn.Module):
         super().__init__()
 
     def forward(self, weight, signal):
+        if weight.shape != signal.shape:
+            weight = weight.expand_as(signal)
         return torch.mul(weight, signal)
 
 
@@ -88,27 +90,32 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if module.__class__.__name__ == "PIDNet":
             return {
                 "forward": cls.forward_pidnet.__get__(module),
-                "canonizer_sum": Sum(),
+                "sum1": Sum(),
+                "sum2": Sum(),
             }
         # BasicBlock
         if module.__class__.__name__ == "BasicBlock":
             return {
                 "forward": cls.forward_basicblock.__get__(module),
-                "canonizer_sum": Sum(),
+                "sum1": Sum(),
             }
 
         # Bottleneck
         if module.__class__.__name__ == "Bottleneck":
             return {
                 "forward": cls.forward_bottleneck.__get__(module),
-                "canonizer_sum": Sum(),
+                "sum1": Sum(),
             }
 
         # PAPPM
         if module.__class__.__name__ == "PAPPM":
             return {
                 "forward": cls.forward_pappm.__get__(module),
-                "canonizer_sum": Sum(),
+                "sum1": Sum(),
+                "sum2": Sum(),
+                "sum3": Sum(),
+                "sum4": Sum(),
+                "sum5": Sum(),
                 "orig_scale_process_params": cls.get_conv_layer_params(
                     module.scale_process[2]
                 ),
@@ -121,15 +128,17 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if module.__class__.__name__ == "Light_Bag":
             return {
                 "forward": cls.forward_lightbag.__get__(module),
-                "canonizer_sum": Sum(),
-                "canonizer_sigmoid": SigmoidWrapper(),
-                "canonizer_mult": Mult(),
+                "sum1": Sum(),
+                "sum2": Sum(),
+                "sum3": Sum(),
+                "sigmoid": SigmoidWrapper(),
+                "mult1": Mult(),
+                "mult2": Mult(),
             }
         # segmenthead
         if module.__class__.__name__ == "segmenthead":
             return {
                 "forward": cls.forward_segmenthead.__get__(module),
-                "canonizer_sum": Sum(),
                 "sequential": cls.get_segmenthead_sequential(module),
             }
 
@@ -137,9 +146,12 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if module.__class__.__name__ == "PagFM":
             return {
                 "forward": cls.forward_pagfm.__get__(module),
-                "canonizer_sum": Sum(dim=1),
-                "canonizer_sigmoid": SigmoidWrapper(),
-                "canonizer_mult": Mult(),
+                "sum1": Sum(dim=1),
+                "sum2": Sum(),
+                "sigmoid": SigmoidWrapper(),
+                "mult1": Mult(),
+                "mult2": Mult(),
+                "mult3": Mult(),
             }
         return None
 
@@ -241,7 +253,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
             size=[height_output, width_output], mode="bilinear", align_corners=algc
         )
         term = self.interp1(self.diff3(x))
-        x_d = self.canonizer_sum(torch.stack([x_d, term], dim=-1))
+        x_d = self.sum1(torch.stack([x_d, term], dim=-1))
 
         if self.augment:
             temp_p = x_
@@ -255,7 +267,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
             size=[height_output, width_output], mode="bilinear", align_corners=algc
         )
         term = self.interp2(self.diff4(x))
-        x_d = self.canonizer_sum(torch.stack([x_d, term], dim=-1))
+        x_d = self.sum2(torch.stack([x_d, term], dim=-1))
 
         if self.augment:
             temp_d = x_d
@@ -304,20 +316,20 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         # if we are using equal distribution, order does not matter.
         # if we are using signal takes all, then sim_map will take 0 relevance anyways.
         # so order of Mult call does not matter here.
-        term = Mult()(x_k, y_q)
+        term = self.mult1(x_k, y_q)
         if self.with_channel:
-            sim_map = torch.sigmoid(self.up(term))
+            sim_map = self.sigmoid(self.up(term))
         else:
-            sim_map = torch.sigmoid(
-                Sum(dim=1)(term).unsqueeze(1)
-            )  # self.canonizer_sum is Sum(dim=1)
+            sim_map = self.sigmoid(
+                self.sum1(term).unsqueeze(1)
+            )  # self.sum is Sum(dim=1)
         self.interp2 = InterpolateWrapper(
             size=[input_size[2], input_size[3]], mode="bilinear", align_corners=False
         )
         y = self.interp2(y)
-        term1 = Mult()(1 - sim_map, x)
-        term2 = Mult()(sim_map, y)
-        x = Sum(dim=1)(torch.stack([term1, term2], dim=1)) # when dim=1 is deleted, it throws error which is weiiiiirrrdd
+        term1 = self.mult2(1 - sim_map, x)
+        term2 = self.mult3(sim_map, y)
+        x = self.sum2(torch.stack([term1, term2],dim=-1)) 
         return x
 
     @staticmethod
@@ -334,7 +346,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if self.downsample is not None:
             residual = self.downsample(x)
 
-        out = self.canonizer_sum(torch.stack([out, residual], dim=-1))
+        out = self.sum1(torch.stack([out, residual], dim=-1))
 
         if self.no_relu:
             return out
@@ -359,7 +371,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if self.downsample is not None:
             residual = self.downsample(x)
 
-        out = self.canonizer_sum(torch.stack([out, residual], dim=-1))
+        out = self.sum1(torch.stack([out, residual], dim=-1))
         if self.no_relu:
             return out
         else:
@@ -390,31 +402,30 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         s3 = self.interp3(self.scale3(x))
         s4 = self.interp4(self.scale4(x))
 
-        scale_list.append(self.canonizer_sum(torch.stack([s1, x_], dim=-1)))
-        scale_list.append(self.canonizer_sum(torch.stack([s2, x_], dim=-1)))
-        scale_list.append(self.canonizer_sum(torch.stack([s3, x_], dim=-1)))
-        scale_list.append(self.canonizer_sum(torch.stack([s4, x_], dim=-1)))
-        # scale_list.append(self.canonizer_sum(torch.stack([s2, x_], dim=-1)))
+        scale_list.append(self.sum1(torch.stack([s1, x_], dim=-1)))
+        scale_list.append(self.sum2(torch.stack([s2, x_], dim=-1)))
+        scale_list.append(self.sum3(torch.stack([s3, x_], dim=-1)))
+        scale_list.append(self.sum4(torch.stack([s4, x_], dim=-1)))
 
         scale_out = self.scale_process(torch.cat(scale_list, 1))
         compression_out = self.compression(torch.cat([x_, scale_out], 1))
         shortcut_out = self.shortcut(x)
 
-        out = self.canonizer_sum(torch.stack([compression_out, shortcut_out], dim=-1))
+        out = self.sum5(torch.stack([compression_out, shortcut_out], dim=-1))
         return out
 
     @staticmethod
     def forward_lightbag(self, p, i, d):
         # Detaching branches P and D here
-        edge_att = self.canonizer_sigmoid(d)
-        term1 = self.canonizer_mult(1 - edge_att, i)
-        term2 = self.canonizer_mult(edge_att, p)
+        edge_att = self.sigmoid(d)
+        term1 = self.mult1(1 - edge_att, i)
+        term2 = self.mult2(edge_att, p)
 
-        p_add = self.canonizer_sum(torch.stack([term1, p], dim=-1))
+        p_add = self.sum1(torch.stack([term1, p], dim=-1))
         p_add = self.conv_p(p_add)
-        i_add = self.canonizer_sum(torch.stack([term2, i], dim=-1))
+        i_add = self.sum2(torch.stack([term2, i], dim=-1))
         i_add = self.conv_i(i_add)
-        return self.canonizer_sum(torch.stack([p_add, i_add], dim=-1))
+        return self.sum3(torch.stack([p_add, i_add], dim=-1))
 
 
 class PIDNetCanonizer(Canonizer):
@@ -442,31 +453,30 @@ class PIDNetCanonizer(Canonizer):
 
     def register(self, model):
         pass
-        # self.canonize(model)
+        self.canonize(model)
         # I Branch
-        #i_branch = ["conv1", "layer1", "layer2", "layer3", "layer4", "layer5"]
+        i_branch = ["conv1", "layer1", "layer2", "layer3", "layer4", "layer5"]
 
         # P Branch
-        #p_branch = ["compression3", "compression4", "layer3_", "layer4_", "layer5_"]
-        # self.canonize(
-        #     model.pag3,
-        #     CorrectSequentialMergeBatchNorm(),
-        #     ["f_x", "f_y"] + ["up"] if model.pag3.with_channel else [],
-        # )
-        # self.canonize(
-        #     model.pag4,
-        #     CorrectSequentialMergeBatchNorm(),
-        #     ["f_x", "f_y"] + ["up"] if model.pag4.with_channel else [],
-        # )
+        p_branch = ["compression3", "compression4", "layer3_", "layer4_", "layer5_"]
+        self.canonize(
+            model.pag3,
+            CorrectSequentialMergeBatchNorm(),
+            ["f_x", "f_y"] + ["up"] if model.pag3.with_channel else [],
+        )
+        self.canonize(
+            model.pag4,
+            CorrectSequentialMergeBatchNorm(),
+            ["f_x", "f_y"] + ["up"] if model.pag4.with_channel else [],
+        )
 
         # D Branch
-        #d_branch = ["layer3_d", "layer4_d", "diff3", "diff4", "layer5_d"]
-        #for layer in i_branch + p_branch + d_branch:
-       #     self.canonize(
-       #         getattr(model, layer), CorrectSequentialMergeBatchNorm()
-        #    )
+        d_branch = ["layer3_d", "layer4_d", "diff3", "diff4", "layer5_d"]
+        for layer in i_branch + p_branch + d_branch:
+           self.canonize(
+               getattr(model, layer), CorrectSequentialMergeBatchNorm()
+           )
 
-# PROBLEM
         TReLU_modules = [
            "scale1",
            "scale2",
@@ -505,37 +515,41 @@ class PIDNetCanonizer(Canonizer):
         else:
             return []
 
+def unbroadcast_like(R: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    """Sum-reduce R so it matches ref.shape (inverse of broadcasting)."""
+    out = R
+    # If ref has fewer dims, sum leading dims
+    while out.dim() > ref.dim():
+        out = out.sum(dim=0)
+    # Now same number of dims: sum dims where ref was broadcast (size 1)
+    for d, (os, rs) in enumerate(zip(out.shape, ref.shape)):
+        if rs == 1 and os != 1:
+            out = out.sum(dim=d, keepdim=True)
+        elif os != rs:
+            # Should not happen for valid broadcast; keep as hard fail
+            raise RuntimeError(f"Cannot unbroadcast: out {out.shape} -> ref {ref.shape}")
+    return out
 
 class SignalTakesAllMul(Hook):
-    """Signal takes all relevance in multiplication"""
     def backward(self, module, grad_input, grad_output):
-        """
-        grad_output: tuple with one element (R_z)
-        grad_input: tuple with two elements (weight_grad, signal_grad)
-        """
         R = grad_output[0]
+        a = grad_input[0]  # weight
+        b = grad_input[1]  # signal
 
-        # weight gets no relevance  
-        R_weight = torch.zeros_like(grad_input[0]) if grad_input[0] is not None else None
-
-        # signal gets all relevance
-        R_signal = R
-
-        return (R_weight, R_signal)
+        Ra = torch.zeros_like(a) if a is not None else None
+        Rb = unbroadcast_like(R, b) if b is not None else None
+        return (Ra, Rb)
 
 
 class FlatMul(Hook):
-    """
-    Flat (equal) relevance distribution for elementwise multiplication
-    """
     def backward(self, module, grad_input, grad_output):
         R = grad_output[0]
+        a = grad_input[0]
+        b = grad_input[1]
 
-        # Equal distribution
-        R_a = 0.5 * R if grad_input[0] is not None else None
-        R_b = 0.5 * R if grad_input[1] is not None else None
-
-        return (R_a, R_b)
+        Ra = unbroadcast_like(0.5 * R, a) if a is not None else None
+        Rb = unbroadcast_like(0.5 * R, b) if b is not None else None
+        return (Ra, Rb)
 
 
 class EpsilonPlusFlatBasePIDNet(EpsilonPlusFlat):
