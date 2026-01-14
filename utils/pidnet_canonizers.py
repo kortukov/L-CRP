@@ -63,26 +63,30 @@ class InterpolateWrapper(nn.Module):
 
 # Canonizer for PIDNet
 class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
-    def __init__(self, attribute_map=None):
+    def __init__(self, attribute_map=None, recursive=True):
         if attribute_map is None:
             attribute_map = self._attribute_map
         super().__init__(attribute_map)
+        self.recursive = recursive
 
     def copy(self):
         return PIDNetBaseCanonizer()
 
     def apply(self, module):
-        # This canonizer IS NOT RECURSIVE.
+        instances = []
+        if self.recursive:
+            instances = super().apply(module)
+        else:
+        # Apply only to root module.
         # PIDNetCanonizer handles submodules for our specific PIDNet arch.
         # The roadblock for a PIDNet-general canonizer is module canonizers for modules not included in our module
         # And also a way to account for the forward function of the root PIDNet module
-        instance = []
-        attributes = self.attribute_map(module.__class__.__name__, module)
-        if attributes is not None:
-            instance = self.copy()
-            instance.register(module, attributes)
-            instance = [instance]
-        return instance
+            attributes = self.attribute_map(module.__class__.__name__, module)
+            if attributes is not None:
+                instance = self.copy()
+                instance.register(module, attributes)
+                instances = [instance]
+        return instances
     
     @classmethod
     def _attribute_map(cls, name, module):
@@ -214,6 +218,8 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
             dilation=conv_g.dilation,
             bias=(conv_g.bias is not None),
             groups=1,
+            device=conv_g.weight.device,
+            dtype=conv_g.weight.dtype,
         )
 
         # Zero all weights first
@@ -436,7 +442,7 @@ class PIDNetCanonizer(Canonizer):
         super(PIDNetCanonizer).__init__()
 
     def canonize(self, layer, additional_canonizers=None, submodule_names=None):
-        self.handles += PIDNetBaseCanonizer().apply(layer)
+        self.handles += PIDNetBaseCanonizer(recursive=False).apply(layer)
         if not isinstance(additional_canonizers, list):
             if not isinstance(submodule_names, list):
                 additional_canonizers = [additional_canonizers]
