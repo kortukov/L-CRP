@@ -14,7 +14,8 @@ import torch.nn as nn
 
 from .yolov5 import non_max_suppression, Sigmoid_
 
-MODEL = dict(
+
+MODEL_yolov6s = dict(
     type='YOLOv6s',
     pretrained=None,
     depth_multiple=0.33,
@@ -42,8 +43,41 @@ MODEL = dict(
 )
 
 
+MODELYOLOv6s6 = dict(
+    type='YOLOv6s6',
+    #pretrained='pretrained_model_for_fine_tune',
+    # pretrained='/media/data/evlachos/TurboSVM-FL/YOLOV6_turbo/weights/trial/best_ckpt_artal.pt',
+    pretrained= None,
+    depth_multiple=0.33,
+    width_multiple=0.50,
+    backbone=dict(
+        type='EfficientRep6',
+        num_repeats=[1, 6, 12, 18, 6, 6],
+        out_channels=[64, 128, 256, 512, 768, 1024],
+        fuse_P2=True, # if use RepBiFPANNeck6, please set fuse_P2 to True.
+        cspsppf=True,
+        ),
+    neck=dict(
+        type='RepBiFPANNeck6',
+        num_repeats=[12, 12, 12, 12, 12, 12],
+        out_channels=[512, 256, 128, 256, 512, 1024],
+        ),
+    head=dict(
+        type='EffiDeHead',
+        in_channels=[128, 256, 512, 1024],
+        num_layers=4,
+        anchors=1,
+        strides=[8, 16, 32, 64],
+        atss_warmup_epoch=4,
+        iou_type='giou',
+        use_dfl=False,
+        reg_max=0 #if use_dfl is False, please set reg_max to 0
+    )
+)
+
+
 def get_yolov6(*args, **kwargs):
-    cfg = Config({"model": MODEL})
+    cfg = Config({"model": MODEL_yolov6s})
     model = build_model(cfg=cfg, num_classes=80, device=0)
     sd = torch.load("models/checkpoints/yolo_person_car_detection_ckpt.pt")
     model.load_state_dict(sd)
@@ -52,7 +86,7 @@ def get_yolov6(*args, **kwargs):
 
 
 def get_yolov6s6(*args, **kwargs):
-    cfg = Config({"model": MODEL})
+    cfg = Config({"model": MODELYOLOv6s6})
     device = kwargs.get("device", 0)
     ckpt_path = kwargs.get("ckpt_path", "models/checkpoints/yolo_person_car_detection_ckpt.pt")
     dtype = kwargs.get("dtype", torch.float32)
@@ -92,7 +126,7 @@ class YoloV6S6_Model(nn.Module):
         # output is a list of len batch_size, each elem is shape (num_detections, 4 + 1 + num_classes), where this 1 is the objectness score
 
         # Apply non-max suppression to filter overlapping detections
-        filtered_detections = non_max_suppression(output[0]) 
+        filtered_detections = non_max_suppression(output[0], conf_thres=0.4)
         assert filtered_detections[0].shape[1]
 
         # filtered_detections is a list of len batch_size, each elem is shape (num_detections, 4(xyxy) + 1(pred_confidence) + 1(pred_class_idx) + num_classes(logits))
@@ -193,7 +227,7 @@ class Model(nn.Module):
         return x
 
     def make_explainable(self, output):
-        x = non_max_suppression(output, conf_thres=0.25, max_det=25)
+        x = non_max_suppression(output, conf_thres=0.4, max_det=25)
         max_boxes = np.max([y.shape[0] for y in x])
         x = [y if y.shape[1] == 86 else torch.zeros((y.shape[0], 86)).to(y) for y in x]
         # print(max_boxes, [s.shape for s in x])

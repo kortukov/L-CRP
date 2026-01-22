@@ -13,7 +13,10 @@ COMPOSITES = {
     # object detectors
     "yolov5": EpsilonPlusFlat,
     "yolov6": EpsilonPlusFlat,
-    "yolov6s6": EpsilonPlusFlat,
+
+    # "yolov6s6": EpsilonPlusFlat,
+    "yolov6s6": EpsilonGammaFlat,
+
     "ssd": EpsilonPlusFlat,
     # segmentation models
     "unet": EpsilonPlusFlat,
