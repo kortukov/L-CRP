@@ -39,7 +39,7 @@ class SequentialMergeBatchNorm(zcanon.SequentialMergeBatchNorm):
     def merge_batch_norm(self, modules, batch_norm):
         self.batch_norm_eps = batch_norm.eps
         super(SequentialMergeBatchNorm, self).merge_batch_norm(modules, batch_norm)
-        batch_norm.eps = 0.
+        # batch_norm.eps = 0.
 
     def remove(self):
         '''Undo the merge by reverting the parameters of both the linear and the batch norm modules to the state before

@@ -562,7 +562,8 @@ class EpsilonPlusFlatBasePIDNet(EpsilonPlusFlat):
     def __init__(self, canonizers=None):
         super().__init__(canonizers=canonizers)
         self.layer_map += LAYER_MAP_BASE + [
-            (InterpolateWrapper, Epsilon()),
+            # (InterpolateWrapper, Epsilon()),
+            (InterpolateWrapper, Pass()),
             (SigmoidWrapper, Pass()),
             (torch.nn.BatchNorm2d, Pass())
         ]

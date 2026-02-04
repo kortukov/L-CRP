@@ -4,9 +4,9 @@ import sys
 
 sys.path.append(os.getcwd())
 import torch
-from zennit.canonizers import Canonizer, CompositeCanonizer, MergeBatchNorm, SequentialMergeBatchNorm
+from zennit.canonizers import Canonizer, CompositeCanonizer, MergeBatchNorm, SequentialMergeBatchNorm, AttributeCanonizer
 from zennit.core import collect_leaves
-from zennit.types import ConvolutionTranspose
+from zennit.types import ConvolutionTranspose, BatchNorm
 from torch.nn.modules.activation import ReLU
 from torch.nn import AdaptiveAvgPool2d
 
@@ -54,16 +54,42 @@ class CorrectSequentialMergeBatchNorm(SequentialMergeBatchNorm):
 
     def merge_batch_norm(self, modules, batch_norm):
         # print(f"(Correctly) Merging BN")
+        self.bn_fwd_handles = BNForwardSuppressCanonizer().apply(batch_norm)
         self.batch_norm_eps = batch_norm.eps
         super(CorrectSequentialMergeBatchNorm, self).merge_batch_norm(modules, batch_norm)
         batch_norm.eps = 0.
+        batch_norm.eps = 1e-05 # Torch cuda 12.8 does not allow 0 eps in eval mode
+
 
     def remove(self):
         '''Undo the merge by reverting the parameters of both the linear and the batch norm modules to the state before
         the merge.
         '''
+        for h in self.bn_fwd_handles:
+            h.remove()
         super(CorrectSequentialMergeBatchNorm, self).remove()
         self.batch_norm.eps = self.batch_norm_eps
+
+class BNForwardSuppressCanonizer(AttributeCanonizer):
+    def __init__(self, attribute_map=None, recursive=True):
+        if attribute_map is None:
+            attribute_map = self._attribute_map
+        super().__init__(attribute_map)
+        self.recursive = recursive
+
+    def copy(self):
+        return BNForwardSuppressCanonizer()
+
+    @classmethod
+    def _attribute_map(cls, name, module):
+        if isinstance(module, BatchNorm):
+            return {
+                "forward": cls.id_forward.__get__(module),
+            }
+  
+    @staticmethod
+    def id_forward(self, x):
+        return x
 
 
 # Canonizer to canonize BN->Linear or BN->Conv modules.
@@ -136,11 +162,15 @@ class SequentialMergeBatchNormtoRight(MergeBatchNorm):
         }
         returned_handles = self.merge_batch_norm(self.linears, self.batch_norm)
         self.handles = returned_handles
+        self.bn_fwd_handles = BNForwardSuppressCanonizer().apply(batch_norm)
+
 
     def remove(self):
         '''Undo the merge by reverting the parameters of both the linear and the batch norm modules to the state before
         the merge.
         '''
+        for h in self.bn_fwd_handles:
+            h.remove()
         super(SequentialMergeBatchNormtoRight, self).remove()
         self.batch_norm.eps = self.batch_norm_eps
         for h in self.handles:
@@ -199,7 +229,9 @@ class SequentialMergeBatchNormtoRight(MergeBatchNorm):
         batch_norm.bias.data = torch.zeros_like(batch_norm.bias.data)
         batch_norm.weight.data = torch.ones_like(batch_norm.weight.data)
         batch_norm.eps = 0.
+        batch_norm.eps = 1e-05 # Torch cuda 12.8 does not allow 0 eps in eval mode
         return return_handles
+
 
 class ThreshReLUMergeBatchNorm(SequentialMergeBatchNormtoRight):
     # Hook functions for ReLU_thresh
