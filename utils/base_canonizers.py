@@ -305,6 +305,7 @@ class ThreshReLUMergeBatchNorm(SequentialMergeBatchNormtoRight):
         self.relu.canonization_params = {}
         self.relu.canonization_params['weights'] = scale
         self.relu.canonization_params['biases'] = shift
+        self.relu.inplace=False
 
         super().register(linears,batch_norm)
         self.handles.append(self.relu.register_forward_pre_hook(ThreshReLUMergeBatchNorm.prehook))

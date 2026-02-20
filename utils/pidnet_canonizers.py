@@ -494,18 +494,17 @@ class PIDNetCanonizer(Canonizer):
            "shortcut",
         ]
         self.canonize(model.spp, ThreshReLUMergeBatchNorm(), TReLU_modules)
-
         self.canonize(
             model.dfm, CorrectSequentialMergeBatchNorm(), ["conv_p", "conv_i"]
         )
         # Prediction Head 
-        segheads = ["final_layer"] + (["seghead_p", "seghead_d"] if model.augment else [])
-        for sh_layer in segheads:
-            self.canonize(
-                getattr(model, sh_layer),
-                [CorrectSequentialMergeBatchNorm(), ThreshReLUMergeBatchNorm()],
-                ["sequential", "sequential"],
-            )
+        # segheads = ["final_layer"] + (["seghead_p", "seghead_d"] if model.augment else [])
+        # for sh_layer in segheads:
+        #     self.canonize(
+        #         getattr(model, sh_layer),
+        #         [CorrectSequentialMergeBatchNorm(), ThreshReLUMergeBatchNorm()],
+        #         ["sequential", "sequential"],
+        #     )
 
     def remove(self):
         self.handles.reverse()
