@@ -22,6 +22,18 @@ from zennit.core import Hook, BasicHook
 
 algc = False
 
+# Disable TensorFloat-32 (TF32) for higher precision
+import torch
+
+# 1. Handle Matrix Multiplication TF32 (introduced in PyTorch 1.7)
+if hasattr(torch.backends.cuda, "matmul"):
+    if hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+        torch.backends.cuda.matmul.allow_tf32 = False
+
+# 2. Handle cuDNN TF32 (also introduced in PyTorch 1.7)
+if hasattr(torch.backends.cudnn, "allow_tf32"):
+    torch.backends.cudnn.allow_tf32 = False
+
 
 class SigmoidWrapper(nn.Module):
     def __init__(self):
