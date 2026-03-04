@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch
 from zennit.composites import EpsilonPlusFlat, LAYER_MAP_BASE
 from zennit.layer import Sum
-from zennit.rules import Epsilon, Norm, Pass
+from zennit.rules import Epsilon, Norm, Pass, Flat
 from zennit.core import Hook, BasicHook
 
 
@@ -71,7 +71,12 @@ class InterpolateWrapper(nn.Module):
             mode=self.mode,
             align_corners=self.align_corners,
         )
-
+    
+def disable_inplace(model: nn.Module):
+    for m in model.modules():
+        if hasattr(m, "inplace"):
+            m.inplace = False
+    return model
 
 # Canonizer for PIDNet
 class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
@@ -532,6 +537,7 @@ class PIDNetCanonizer(Canonizer):
 
     def apply(self, module):
         if isinstance(module, PIDNet):
+            disable_inplace(module)
             if module.seghead_p.scale_factor is not None or module.seghead_d.scale_factor is not None:
                 raise Exception("canonizer only works for segmenthead.scale_factor=None currently")
             instance = self.copy()
@@ -576,26 +582,42 @@ class FlatMul(Hook):
         Ra = unbroadcast_like(0.5 * R, a) if a is not None else None
         Rb = unbroadcast_like(0.5 * R, b) if b is not None else None
         return (Ra, Rb)
-
-
-class EpsilonPlusFlatBasePIDNet(EpsilonPlusFlat):
+from zennit.types import Convolution, Linear, AvgPool, Activation
+from zennit.types import Activation, AvgPool
+from zennit.core import Composite
+class EpsilonPlusFlatforPIDNet(Composite):
     def __init__(self, canonizers=None):
-        super().__init__(canonizers=canonizers)
-        self.layer_map += LAYER_MAP_BASE + [
-            (InterpolateWrapper, Epsilon()),
-            # (InterpolateWrapper, Pass()),
-            (SigmoidWrapper, Pass()),
-            (torch.nn.BatchNorm2d, Pass())
+        self.layer_map = [
+                (Activation, Pass()),
+                (Sum, Norm()),
+                (AvgPool, Norm()),
+                (Convolution, Flat()),
+                (torch.nn.Linear, Flat()),
+                (InterpolateWrapper, Flat()),
+                (SigmoidWrapper, Pass()),
+                (torch.nn.BatchNorm2d, Flat()),
+                (Mult, SignalTakesAllMul())
         ]
+        
+        super().__init__(self.mapping, canonizers)
+    
 
+    def mapping(self, ctx, name, module):
+        '''Get the appropriate hook given a mapping from module types to hooks.
 
-class EpsilonPlusFlatMulforPIDNet(EpsilonPlusFlatBasePIDNet):
-    def __init__(self, canonizers=None):
-        super().__init__(canonizers=canonizers)
-        self.layer_map += [(Mult, FlatMul())]
+        Parameters
+        ----------
+        ctx: dict
+            A context dictionary to keep track of previously registered hooks.
+        name: str
+            Name of the module.
+        module: obj:`torch.nn.Module`
+            Instance of the module to find a hook for.
 
+        Returns
+        -------
+        obj:`Hook` or None
+            The hook found with the module type in the given layer map, or None if no applicable hook was found.
+        '''
+        return next((hook for types, hook in self.layer_map if isinstance(module, types)), None)
 
-class EpsilonPlusFlatforPIDNet(EpsilonPlusFlatBasePIDNet):
-    def __init__(self, canonizers=None):
-        super().__init__(canonizers=canonizers)
-        self.layer_map += [(Mult, SignalTakesAllMul())]
