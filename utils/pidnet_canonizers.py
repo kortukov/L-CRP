@@ -587,7 +587,7 @@ from zennit.types import Convolution, Linear, AvgPool, Activation
 from zennit.types import Activation, AvgPool
 from zennit.core import Composite
 
-class EpsilonPlusFlatforPIDNet(Composite):
+class TestComposite(Composite):
     def __init__(self, canonizers=None):
         self.layer_map = [
                 (Activation, Pass()),
@@ -623,3 +623,13 @@ class EpsilonPlusFlatforPIDNet(Composite):
         '''
         return next((hook for types, hook in self.layer_map if isinstance(module, types)), None)
 
+class EpsilonPlusFlatforPIDNet(EpsilonPlusFlat):
+    def __init__(self, canonizers=None):
+        super().__init__(canonizers=canonizers)
+        self.layer_map += LAYER_MAP_BASE + [
+            # (InterpolateWrapper, Epsilon()),
+            (InterpolateWrapper, Pass()),
+            (SigmoidWrapper, Pass()),
+            (torch.nn.BatchNorm2d, Pass()),
+            (Mult, SignalTakesAllMul())
+        ]
