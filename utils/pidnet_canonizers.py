@@ -147,9 +147,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
                 "sum3": Sum(),
                 "sum4": Sum(),
                 "sum5": Sum(),
-                "orig_scale_process_params": cls.get_conv_layer_params(
-                    module.scale_process[2]
-                ),
+                "orig_scale_process_params": cls.get_conv_layer_params(module.scale_process[2]),
                 "scale_process": cls.convert_grouped_conv_to_regular(
                     module.scale_process
                 ),
@@ -189,7 +187,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if module.__class__.__name__ == "PagFM":
             return {
                 "forward": cls.forward_pagfm.__get__(module),
-                "sum1": Sum(dim=1),
+                "sum1": Sum(),
                 "sum2": Sum(),
                 "sigmoid": SigmoidWrapper(),
                 "mult1": Mult(),
@@ -208,10 +206,10 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
     def get_segmenthead_sequential(segmenthead):
         seq = torch.nn.Sequential()
         seq.add_module("bn1", deepcopy(segmenthead.bn1))
-        seq.add_module("relu1", torch.nn.ReLU())
+        seq.add_module("relu1", torch.nn.ReLU(inplace=False))
         seq.add_module("conv1", deepcopy(segmenthead.conv1))
         seq.add_module("bn2", deepcopy(segmenthead.bn2))
-        seq.add_module("relu2", torch.nn.ReLU())
+        seq.add_module("relu2", torch.nn.ReLU(inplace=False))
         seq.add_module("conv2", deepcopy(segmenthead.conv2))
         return seq
 
@@ -362,9 +360,11 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if self.with_channel:
             sim_map = self.sigmoid(self.up(term))
         else:
+            term=term.permute(0,2,3,1)
             sim_map = self.sigmoid(
-                self.sum1(term).unsqueeze(1)
-            )  # self.sum is Sum(dim=1)
+                self.sum1(term).unsqueeze(-1)
+            )
+            sim_map=sim_map.permute(0,3,1,2)
         y = self.interp2(y)
         term1 = self.mult2(1 - sim_map, x)
         term2 = self.mult3(sim_map, y)
@@ -582,20 +582,22 @@ class FlatMul(Hook):
         Ra = unbroadcast_like(0.5 * R, a) if a is not None else None
         Rb = unbroadcast_like(0.5 * R, b) if b is not None else None
         return (Ra, Rb)
+
 from zennit.types import Convolution, Linear, AvgPool, Activation
 from zennit.types import Activation, AvgPool
 from zennit.core import Composite
+
 class EpsilonPlusFlatforPIDNet(Composite):
     def __init__(self, canonizers=None):
         self.layer_map = [
                 (Activation, Pass()),
                 (Sum, Norm()),
                 (AvgPool, Norm()),
-                (Convolution, Flat()),
-                (torch.nn.Linear, Flat()),
-                (InterpolateWrapper, Flat()),
+                (Convolution, Epsilon()),
+                (torch.nn.Linear, Epsilon()),
+                (InterpolateWrapper, Epsilon()),
                 (SigmoidWrapper, Pass()),
-                (torch.nn.BatchNorm2d, Flat()),
+                (torch.nn.BatchNorm2d, Pass()),
                 (Mult, SignalTakesAllMul())
         ]
         
