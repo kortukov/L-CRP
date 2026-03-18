@@ -22,7 +22,7 @@ algc = False
 CONFIGS = {
     "pidnet": {
         "classes": 2,
-        "ckpt_path": None#"../models/checkpoints/flood_s_best_pidnet_modified.pt",
+        "ckpt_path": "/home/heydari/FHHI-XAI/models/flood_model.pt"
     }
 }
 
@@ -321,5 +321,4 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
     FPS = 1000 / latency
     print(FPS)
-
 

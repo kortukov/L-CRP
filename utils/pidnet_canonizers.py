@@ -16,11 +16,23 @@ import torch.nn as nn
 import torch
 from zennit.composites import EpsilonPlusFlat, LAYER_MAP_BASE
 from zennit.layer import Sum
-from zennit.rules import Epsilon, Norm, Pass
+from zennit.rules import Epsilon, Norm, Pass, Flat
 from zennit.core import Hook, BasicHook
 
 
 algc = False
+
+# Disable TensorFloat-32 (TF32) for higher precision
+import torch
+
+# 1. Handle Matrix Multiplication TF32 (introduced in PyTorch 1.7)
+if hasattr(torch.backends.cuda, "matmul"):
+    if hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+        torch.backends.cuda.matmul.allow_tf32 = False
+
+# 2. Handle cuDNN TF32 (also introduced in PyTorch 1.7)
+if hasattr(torch.backends.cudnn, "allow_tf32"):
+    torch.backends.cudnn.allow_tf32 = False
 
 
 class SigmoidWrapper(nn.Module):
@@ -59,7 +71,12 @@ class InterpolateWrapper(nn.Module):
             mode=self.mode,
             align_corners=self.align_corners,
         )
-
+    
+def disable_inplace(model: nn.Module):
+    for m in model.modules():
+        if hasattr(m, "inplace"):
+            m.inplace = False
+    return model
 
 # Canonizer for PIDNet
 class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
@@ -96,6 +113,16 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
                 "forward": cls.forward_pidnet.__get__(module),
                 "sum1": Sum(),
                 "sum2": Sum(),
+                "interp1": InterpolateWrapper(
+                    size=[90, 160], mode="bilinear", align_corners=False
+                ),
+
+                "interp2": InterpolateWrapper(
+                    size=[90, 160], mode="bilinear", align_corners=False
+                ),
+                "interp3": InterpolateWrapper(
+                    size=[90, 160], mode="bilinear", align_corners=False
+                )
             }
         # BasicBlock
         if module.__class__.__name__ == "BasicBlock":
@@ -120,11 +147,21 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
                 "sum3": Sum(),
                 "sum4": Sum(),
                 "sum5": Sum(),
-                "orig_scale_process_params": cls.get_conv_layer_params(
-                    module.scale_process[2]
-                ),
+                "orig_scale_process_params": cls.get_conv_layer_params(module.scale_process[2]),
                 "scale_process": cls.convert_grouped_conv_to_regular(
                     module.scale_process
+                ),
+                "interp1": InterpolateWrapper(
+                    size=[12, 20], mode="bilinear", align_corners=False
+                ),
+                "interp2": InterpolateWrapper(
+                    size=[12, 20], mode="bilinear", align_corners=False
+                ),
+                "interp3": InterpolateWrapper(
+                    size=[12, 20], mode="bilinear", align_corners=False
+                ),
+                "interp4": InterpolateWrapper(
+                    size=[12, 20], mode="bilinear", align_corners=False
                 ),
             }
 
@@ -150,12 +187,18 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if module.__class__.__name__ == "PagFM":
             return {
                 "forward": cls.forward_pagfm.__get__(module),
-                "sum1": Sum(dim=1),
+                "sum1": Sum(),
                 "sum2": Sum(),
                 "sigmoid": SigmoidWrapper(),
                 "mult1": Mult(),
                 "mult2": Mult(),
                 "mult3": Mult(),
+                "interp1": InterpolateWrapper(
+                    size=[90, 160], mode="bilinear", align_corners=False
+                ),
+                "interp2": InterpolateWrapper(
+                    size=[90, 160], mode="bilinear", align_corners=False
+                ),
             }
         return None
 
@@ -163,10 +206,10 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
     def get_segmenthead_sequential(segmenthead):
         seq = torch.nn.Sequential()
         seq.add_module("bn1", deepcopy(segmenthead.bn1))
-        seq.add_module("relu1", torch.nn.ReLU())
+        seq.add_module("relu1", torch.nn.ReLU(inplace=False))
         seq.add_module("conv1", deepcopy(segmenthead.conv1))
         seq.add_module("bn2", deepcopy(segmenthead.bn2))
-        seq.add_module("relu2", torch.nn.ReLU())
+        seq.add_module("relu2", torch.nn.ReLU(inplace=False))
         seq.add_module("conv2", deepcopy(segmenthead.conv2))
         return seq
 
@@ -255,9 +298,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
 
         x = self.relu(self.layer3(x))
         x_ = self.pag3(x_, self.compression3(x))
-        self.interp1 = InterpolateWrapper(
-            size=[height_output, width_output], mode="bilinear", align_corners=algc
-        )
+
         term = self.interp1(self.diff3(x))
         x_d = self.sum1(torch.stack([x_d, term], dim=-1))
 
@@ -269,9 +310,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         x_d = self.layer4_d(self.relu(x_d))
 
         x_ = self.pag4(x_, self.compression4(x))
-        self.interp2 = InterpolateWrapper(
-            size=[height_output, width_output], mode="bilinear", align_corners=algc
-        )
+
         term = self.interp2(self.diff4(x))
         x_d = self.sum2(torch.stack([x_d, term], dim=-1))
 
@@ -280,9 +319,7 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
 
         x_ = self.layer5_(self.relu(x_))
         x_d = self.layer5_d(self.relu(x_d))
-        self.interp3 = InterpolateWrapper(
-            size=[height_output, width_output], mode="bilinear", align_corners=algc
-        )
+
         x = self.interp3(self.spp(self.layer5(x)))
         x_ = self.final_layer(self.dfm(x_, x, x_d))
 
@@ -299,9 +336,9 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if self.scale_factor is not None:
             height = x.shape[-2] * self.scale_factor
             width = x.shape[-1] * self.scale_factor
-            self.interp1 = InterpolateWrapper(
-                size=[height, width], mode="bilinear", align_corners=algc
-            )
+            # self.interp1 = InterpolateWrapper(
+            #     size=[height, width], mode="bilinear", align_corners=algc
+            # ) # Note: this should not be run in practice , scale_factor is supposed to be None
             out = self.interp1(out)
 
         return out
@@ -314,9 +351,6 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
             x = self.relu(x)
 
         y_q = self.f_y(y)
-        self.interp1 = InterpolateWrapper(
-            size=[input_size[2], input_size[3]], mode="bilinear", align_corners=False
-        )
         y_q = self.interp1(y_q)
         x_k = self.f_x(x)
         # if we are using equal distribution, order does not matter.
@@ -326,12 +360,11 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         if self.with_channel:
             sim_map = self.sigmoid(self.up(term))
         else:
+            term=term.permute(0,2,3,1)
             sim_map = self.sigmoid(
-                self.sum1(term).unsqueeze(1)
-            )  # self.sum is Sum(dim=1)
-        self.interp2 = InterpolateWrapper(
-            size=[input_size[2], input_size[3]], mode="bilinear", align_corners=False
-        )
+                self.sum1(term).unsqueeze(-1)
+            )
+            sim_map=sim_map.permute(0,3,1,2)
         y = self.interp2(y)
         term1 = self.mult2(1 - sim_map, x)
         term2 = self.mult3(sim_map, y)
@@ -388,18 +421,6 @@ class PIDNetBaseCanonizer(zcanon.AttributeCanonizer):
         width = x.shape[-1]
         height = x.shape[-2]
         scale_list = []
-        self.interp1 = InterpolateWrapper(
-            size=[height, width], mode="bilinear", align_corners=algc
-        )
-        self.interp2 = InterpolateWrapper(
-            size=[height, width], mode="bilinear", align_corners=algc
-        )
-        self.interp3 = InterpolateWrapper(
-            size=[height, width], mode="bilinear", align_corners=algc
-        )
-        self.interp4 = InterpolateWrapper(
-            size=[height, width], mode="bilinear", align_corners=algc
-        )
 
         x_ = self.scale0(x)
 
@@ -465,6 +486,8 @@ class PIDNetCanonizer(Canonizer):
 
         # P Branch
         p_branch = ["compression3", "compression4", "layer3_", "layer4_", "layer5_"]
+        model.pag3.first=True
+        model.pag4.first=False
         self.canonize(
             model.pag3,
             CorrectSequentialMergeBatchNorm(),
@@ -494,7 +517,6 @@ class PIDNetCanonizer(Canonizer):
            "shortcut",
         ]
         self.canonize(model.spp, ThreshReLUMergeBatchNorm(), TReLU_modules)
-
         self.canonize(
             model.dfm, CorrectSequentialMergeBatchNorm(), ["conv_p", "conv_i"]
         )
@@ -515,6 +537,9 @@ class PIDNetCanonizer(Canonizer):
 
     def apply(self, module):
         if isinstance(module, PIDNet):
+            disable_inplace(module)
+            if module.seghead_p.scale_factor is not None or module.seghead_d.scale_factor is not None:
+                raise Exception("canonizer only works for segmenthead.scale_factor=None currently")
             instance = self.copy()
             instance.register(module)
             return [instance]
@@ -544,6 +569,7 @@ class SignalTakesAllMul(Hook):
 
         Ra = torch.zeros_like(a) if a is not None else None
         Rb = unbroadcast_like(R, b) if b is not None else None
+        assert torch.isclose(Rb.sum(), torch.tensor([g.sum() for g in grad_output]).sum())
         return (Ra, Rb)
 
 
@@ -557,25 +583,52 @@ class FlatMul(Hook):
         Rb = unbroadcast_like(0.5 * R, b) if b is not None else None
         return (Ra, Rb)
 
+from zennit.types import Convolution, Linear, AvgPool, Activation
+from zennit.types import Activation, AvgPool
+from zennit.core import Composite
 
-class EpsilonPlusFlatBasePIDNet(EpsilonPlusFlat):
+class TestComposite(Composite):
+    def __init__(self, canonizers=None):
+        self.layer_map = [
+                (Activation, Pass()),
+                (Sum, Norm()),
+                (AvgPool, Norm()),
+                (Convolution, Epsilon()),
+                (torch.nn.Linear, Epsilon()),
+                (InterpolateWrapper, Epsilon()),
+                (SigmoidWrapper, Pass()),
+                (torch.nn.BatchNorm2d, Pass()),
+                (Mult, SignalTakesAllMul())
+        ]
+        
+        super().__init__(self.mapping, canonizers)
+    
+
+    def mapping(self, ctx, name, module):
+        '''Get the appropriate hook given a mapping from module types to hooks.
+
+        Parameters
+        ----------
+        ctx: dict
+            A context dictionary to keep track of previously registered hooks.
+        name: str
+            Name of the module.
+        module: obj:`torch.nn.Module`
+            Instance of the module to find a hook for.
+
+        Returns
+        -------
+        obj:`Hook` or None
+            The hook found with the module type in the given layer map, or None if no applicable hook was found.
+        '''
+        return next((hook for types, hook in self.layer_map if isinstance(module, types)), None)
+
+class EpsilonPlusFlatforPIDNet(EpsilonPlusFlat):
     def __init__(self, canonizers=None):
         super().__init__(canonizers=canonizers)
         self.layer_map += LAYER_MAP_BASE + [
-            # (InterpolateWrapper, Epsilon()),
-            (InterpolateWrapper, Pass()),
+            (InterpolateWrapper, Epsilon()),
             (SigmoidWrapper, Pass()),
-            (torch.nn.BatchNorm2d, Pass())
+            (torch.nn.BatchNorm2d, Pass()),
+            (Mult, SignalTakesAllMul())
         ]
-
-
-class EpsilonPlusFlatMulforPIDNet(EpsilonPlusFlatBasePIDNet):
-    def __init__(self, canonizers=None):
-        super().__init__(canonizers=canonizers)
-        self.layer_map += [(Mult, FlatMul())]
-
-
-class EpsilonPlusFlatforPIDNet(EpsilonPlusFlatBasePIDNet):
-    def __init__(self, canonizers=None):
-        super().__init__(canonizers=canonizers)
-        self.layer_map += [(Mult, SignalTakesAllMul())]
