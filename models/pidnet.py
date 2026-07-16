@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
+import os
 from .model_utils import BasicBlock, Bottleneck, segmenthead, DAPPM, PAPPM, PagFM, Bag, Light_Bag
 import logging
 
@@ -18,11 +19,13 @@ BatchNorm2d = nn.BatchNorm2d
 bn_mom = 0.1
 algc = False
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
 # Default config used when no overrides are provided via kwargs.
 CONFIGS = {
     "pidnet": {
         "classes": 2,
-        "ckpt_path": "/home/heydari/FHHI-XAI/models/flood_model.pt"
+        "ckpt_path": os.path.join(REPO_ROOT, "models", "flood_model.pt")
     }
 }
 
@@ -55,6 +58,8 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     state = torch.load(ckpt_path, map_location="cpu")
     # Allow both full state_dict or a dict containing "state_dict"
     state_dict = state.get("state_dict", state)
+    if all(key.startswith("model.") for key in state_dict.keys()):
+        state_dict = {key[len("model."):]: value for key, value in state_dict.items()}
     model.load_state_dict(state_dict, strict=True)
 
     # Move to the desired device
@@ -321,4 +326,3 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
     FPS = 1000 / latency
     print(FPS)
-
