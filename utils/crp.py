@@ -106,15 +106,52 @@ class CondAttributionLocalization(CondAttributionWithTiming):
         if target_list:
             r = torch.zeros_like(prediction).to(self.device)
             for i, target in enumerate(target_list):
+                if isinstance(target, (list, tuple)):
+                    if len(target) != 1:
+                        raise ValueError(
+                            "Object-detection attribution expects exactly one "
+                            f"class per condition, got {target}."
+                        )
+                    target = target[0]
+                target = int(target)
+
                 if prediction[i].shape[0] == 0:
                     print("no predicted boxes")
                 else:
-                    k = min(self.take_prediction + 1, prediction[i].shape[0])
-                    best_bb_id = torch.topk(prediction[i], k, dim=0).indices[k - 1, target].item()
-                    if self.take_prediction != 0:
-                        print("taking prediction num. ", k - 1, " (wanted ", self.take_prediction, ")")
-                    r[i, best_bb_id, target] = torch.ones_like(r[i, best_bb_id, target]) * (
-                            prediction[i, best_bb_id, target] > 0.25)
+                    # Match the plotting path exactly:
+                    # 1. assign every NMS box its argmax class;
+                    # 2. retain boxes predicted as the requested class;
+                    # 3. sort those boxes by their winning class score;
+                    # 4. select prediction_num within that class.
+                    predicted_classes = prediction[i].argmax(dim=1)
+                    candidate_ids = torch.nonzero(
+                        predicted_classes == target,
+                        as_tuple=False,
+                    ).flatten()
+
+                    if candidate_ids.numel() == 0:
+                        print(f"no predicted boxes for class {target}")
+                        continue
+
+                    class_scores = prediction[i, candidate_ids, target]
+                    candidate_order = torch.argsort(
+                        class_scores,
+                        descending=True,
+                    )
+
+                    if self.take_prediction >= candidate_order.numel():
+                        print(
+                            f"prediction num. {self.take_prediction} is unavailable "
+                            f"for class {target}; found {candidate_order.numel()} box(es)"
+                        )
+                        continue
+
+                    best_bb_id = candidate_ids[
+                        candidate_order[self.take_prediction]
+                    ].item()
+                    r[i, best_bb_id, target] = (
+                        prediction[i, best_bb_id, target] > 0.25
+                    ).to(r.dtype)
             init_rel = r / (r.sum() + 1e-12)
         else:
             prediction = prediction.clamp(min=0)
