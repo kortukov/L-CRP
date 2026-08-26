@@ -25,6 +25,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 CONFIGS = {
     "pidnet": {
         "classes": 2,
+        "in_channels": 3,
         "ckpt_path": os.path.join(REPO_ROOT, "models", "flood_model.pt")
     }
 }
@@ -36,6 +37,7 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     This version does NOT require `model_name`. It merges `kwargs` with defaults from CONFIGS["pidnet"].
     You may override:
       - classes: int
+      - in_channels: int
       - ckpt_path: str
     """
     # Merge defaults with any overrides
@@ -44,7 +46,8 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     # Build model
     model = PIDNet(
         m=2, n=3, num_classes=cfg["classes"], planes=32,
-        ppm_planes=96, head_planes=128, augment=True
+        ppm_planes=96, head_planes=128, augment=True,
+        in_channels=cfg["in_channels"],
     )
 
     # Load checkpoint if provided
@@ -68,13 +71,14 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
 
 class PIDNet(nn.Module):
 
-    def __init__(self, m=2, n=3, num_classes=19, planes=64, ppm_planes=96, head_planes=128, augment=True):
+    def __init__(self, m=2, n=3, num_classes=19, planes=64, ppm_planes=96, head_planes=128,
+                augment=True, in_channels=3):
         super(PIDNet, self).__init__()
         self.augment = augment
 
         # I Branch
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, planes, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(in_channels, planes, kernel_size=3, stride=2, padding=1),
             BatchNorm2d(planes, momentum=bn_mom),
             nn.ReLU(inplace=True),
             nn.Conv2d(planes, planes, kernel_size=3, stride=2, padding=1),
