@@ -69,6 +69,19 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     model = model.to(device)
     return model
 
+
+def infer_checkpoint_geometry(ckpt_path: str):
+    """Return (in_channels, num_classes) as stored in a PIDNet checkpoint."""
+    state = torch.load(ckpt_path, map_location="cpu")
+    state_dict = state.get("state_dict", state) if isinstance(state, dict) else state
+    if all(key.startswith("model.") for key in state_dict):
+        state_dict = {key[len("model."):]: value for key, value in state_dict.items()}
+    return (
+        int(state_dict["conv1.0.weight"].shape[1]),
+        int(state_dict["final_layer.conv2.weight"].shape[0]),
+    )
+
+
 class PIDNet(nn.Module):
 
     def __init__(self, m=2, n=3, num_classes=19, planes=64, ppm_planes=96, head_planes=128,
