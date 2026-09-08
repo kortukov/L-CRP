@@ -29,6 +29,26 @@ CONFIGS = {
     }
 }
 
+
+def _checkpoint_state_dict(checkpoint):
+    """Return a PIDNet state dict with common training-wrapper prefixes removed."""
+    state = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    for prefix in ("module.", "model."):
+        if state and all(key.startswith(prefix) for key in state):
+            state = {key[len(prefix):]: value for key, value in state.items()}
+    return state
+
+
+def infer_checkpoint_geometry(ckpt_path):
+    """Infer input channels and output classes without constructing the model."""
+    state = _checkpoint_state_dict(torch.load(ckpt_path, map_location="cpu"))
+    try:
+        in_channels = int(state["conv1.0.weight"].shape[1])
+        classes = int(state["final_layer.conv2.weight"].shape[0])
+    except (KeyError, AttributeError, IndexError) as exc:
+        raise ValueError(f"Cannot infer PIDNet geometry from checkpoint: {ckpt_path}") from exc
+    return in_channels, classes
+
 def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     """
     Load a PIDNet model and move it to the specified device.
@@ -44,7 +64,8 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     # Build model
     model = PIDNet(
         m=2, n=3, num_classes=cfg["classes"], planes=32,
-        ppm_planes=96, head_planes=128, augment=True
+        ppm_planes=96, head_planes=128, augment=True,
+        in_channels=cfg.get("in_channels", 3),
     )
 
     # Load checkpoint if provided
@@ -57,9 +78,7 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
     print(f"Loading checkpoint from: {ckpt_path}")
     state = torch.load(ckpt_path, map_location="cpu")
     # Allow both full state_dict or a dict containing "state_dict"
-    state_dict = state.get("state_dict", state)
-    if all(key.startswith("model.") for key in state_dict.keys()):
-        state_dict = {key[len("model."):]: value for key, value in state_dict.items()}
+    state_dict = _checkpoint_state_dict(state)
     model.load_state_dict(state_dict, strict=True)
 
     # Move to the desired device
@@ -68,13 +87,14 @@ def get_pidnet(device: str = "cuda", **kwargs) -> nn.Module:
 
 class PIDNet(nn.Module):
 
-    def __init__(self, m=2, n=3, num_classes=19, planes=64, ppm_planes=96, head_planes=128, augment=True):
+    def __init__(self, m=2, n=3, num_classes=19, planes=64, ppm_planes=96,
+                 head_planes=128, augment=True, in_channels=3):
         super(PIDNet, self).__init__()
         self.augment = augment
 
         # I Branch
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, planes, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(in_channels, planes, kernel_size=3, stride=2, padding=1),
             BatchNorm2d(planes, momentum=bn_mom),
             nn.ReLU(inplace=True),
             nn.Conv2d(planes, planes, kernel_size=3, stride=2, padding=1),
