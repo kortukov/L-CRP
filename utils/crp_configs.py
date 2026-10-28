@@ -15,7 +15,7 @@ COMPOSITES = {
     "yolov6": EpsilonPlusFlat,
 
     # "yolov6s6": EpsilonPlusFlat,
-    "yolov6s6": EpsilonGammaFlat,
+    "yolov6s6": EpsilonPlusFlat,
 
     "ssd": EpsilonPlusFlat,
     # segmentation models
